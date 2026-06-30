@@ -136,4 +136,4 @@ data/default-user/settings.json
 
 ## 当前版本
 
-`1.0.11`
+`1.0.12`

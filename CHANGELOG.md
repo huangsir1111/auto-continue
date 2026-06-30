@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.12
+
+- 修复部分 OpenAI-compatible API 会提前向前端发送 `finish_reason`，导致前端关闭连接、后台续写无法继续的问题。
+
 ## 1.0.11
 
 - README 改为中文，并补充完整卸载说明。

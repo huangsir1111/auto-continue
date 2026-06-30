@@ -9,7 +9,7 @@ import {
 } from '../../../extensions.js';
 
 const MODULE_NAME = 'claude_auto_continue';
-const SETTINGS_VERSION = '1.0.11';
+const SETTINGS_VERSION = '1.0.12';
 
 const defaultSettings = {
     enabled: false,
