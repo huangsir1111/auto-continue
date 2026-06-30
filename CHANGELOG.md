@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- 文档补充前端第三方扩展和后端核心补丁的分别卸载方式。
+- 说明通过 GitHub 导入后，扩展真实目录可能在 `data/default-user/extensions`，不一定在 `public/scripts/extensions/third-party`。
+
 ## 1.0.17
 
 - 修复部分 OpenAI-compatible API 把流式正文放在 `delta.content` 数组、`delta.text` 或文本块对象里时，后端仍在接收但酒馆前端看不到后续正文的问题。

@@ -94,7 +94,50 @@ git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/si
 
 如果只是暂时不用，可以在扩展设置里关闭 `Enable auto continue for Claude streaming`，这样就不会再给请求附加自动续写参数。
 
-如果想完全卸载，请按这个顺序来：
+这个扩展分成两部分：前端第三方扩展 + 后端核心补丁。卸载时要看你到底装了哪一部分。
+
+### 情况一：只导入了前端第三方扩展，没有应用后端补丁
+
+这种情况最简单，不需要执行任何 `git apply --reverse`。
+
+优先在 SillyTavern 前端删除：
+
+1. 打开 SillyTavern 的扩展管理 / 第三方扩展列表。
+2. 找到 `Claude Auto Continue`。
+3. 点击垃圾桶删除。
+4. 刷新页面或重启 SillyTavern。
+
+如果酒馆界面删不掉，可以手动删除扩展目录。先进入你的 SillyTavern 根目录，例如：
+
+```powershell
+cd "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
+```
+
+然后找一下扩展真实安装在哪个目录：
+
+```powershell
+Get-ChildItem -Directory "data\default-user\extensions","public\scripts\extensions\third-party" -ErrorAction SilentlyContinue |
+Where-Object { $_.Name -match "auto|continue|claude" } |
+Select-Object FullName
+```
+
+找到后删除对应目录，例如：
+
+```powershell
+Remove-Item -LiteralPath "data\default-user\extensions\auto-continue" -Recurse -Force
+```
+
+或者：
+
+```powershell
+Remove-Item -LiteralPath "public\scripts\extensions\third-party\auto-continue" -Recurse -Force
+```
+
+注意：酒馆界面里会把它显示成 `third-party/...`，但真实目录不一定都在 `public\scripts\extensions\third-party`。通过 GitHub 导入的本地用户扩展，常见位置是 `data\default-user\extensions`。
+
+### 情况二：已经应用过后端核心补丁
+
+如果你应用过本 README 里的核心补丁，完整卸载要先撤销后端补丁，再删除前端扩展。
 
 1. 先停止 SillyTavern 后端。
 
@@ -116,10 +159,18 @@ git apply --check --reverse "public/scripts/extensions/third-party/auto-continue
 git apply --reverse "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
 ```
 
-5. 删除第三方扩展目录：
+5. 删除第三方扩展目录。先查找真实目录：
 
 ```powershell
-Remove-Item -LiteralPath "public/scripts/extensions/third-party/auto-continue" -Recurse -Force
+Get-ChildItem -Directory "data\default-user\extensions","public\scripts\extensions\third-party" -ErrorAction SilentlyContinue |
+Where-Object { $_.Name -match "auto|continue|claude" } |
+Select-Object FullName
+```
+
+再删除查到的目录，例如：
+
+```powershell
+Remove-Item -LiteralPath "public\scripts\extensions\third-party\auto-continue" -Recurse -Force
 ```
 
 6. 重启 SillyTavern。
