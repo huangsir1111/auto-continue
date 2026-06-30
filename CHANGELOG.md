@@ -5,6 +5,7 @@
 - 文档补充前端第三方扩展和后端核心补丁的分别卸载方式。
 - 说明通过 GitHub 导入后，扩展真实目录可能在 `data/default-user/extensions`，不一定在 `public/scripts/extensions/third-party`。
 - 文档简化安装和卸载说明，保留 `Win + R` 打开 `cmd` 的步骤，去掉容易复制出错的复杂目录搜索命令。
+- 安装、撤销补丁和删除扩展的默认命令改为 `data/default-user/extensions/auto-continue` 目录，避免 GitHub 导入后找不到补丁文件。
 
 ## 1.0.17
 
