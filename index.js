@@ -5,11 +5,10 @@ import {
 } from '../../../../script.js';
 import {
     extension_settings,
-    renderExtensionTemplateAsync,
 } from '../../../extensions.js';
 
 const MODULE_NAME = 'claude_auto_continue';
-const SETTINGS_VERSION = '1.0.12';
+const SETTINGS_VERSION = '1.0.13';
 
 const defaultSettings = {
     enabled: false,
@@ -148,20 +147,13 @@ function bindSettingsListeners() {
 }
 
 async function renderSettingsTemplate() {
-    const templatePaths = [
-        'third-party/auto-continue',
-        'third-party/claude-auto-continue',
-    ];
+    const response = await fetch(new URL('./settings.html', import.meta.url), { cache: 'no-cache' });
 
-    for (const path of templatePaths) {
-        try {
-            return await renderExtensionTemplateAsync(path, 'settings');
-        } catch (error) {
-            console.warn(`Claude Auto Continue: failed to load settings template from ${path}`, error);
-        }
+    if (!response.ok) {
+        throw new Error(`Claude Auto Continue: failed to load settings template (${response.status})`);
     }
 
-    throw new Error('Claude Auto Continue: failed to load settings template');
+    return await response.text();
 }
 
 export async function init() {

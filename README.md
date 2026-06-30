@@ -63,6 +63,19 @@ git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/si
 - 默认模式不靠估算 token 判断截断，而是看“回复结束时有没有结尾词”。
 - 只有选择 `Token limit / likely Kiro 8k cut` 时，才会使用 token 上限或疑似截断特征作为判断依据。
 
+## 安装后看不到设置面板怎么办
+
+请先确认扩展已经更新到 `1.0.13` 或更高版本，然后刷新浏览器页面。
+
+如果仍然不显示：
+
+1. 打开浏览器开发者工具，查看 Console 是否有 `Claude Auto Continue: failed to load settings template`。
+2. 确认扩展目录里存在 `index.js`、`manifest.json`、`settings.html` 三个文件。
+3. 确认 SillyTavern 的第三方扩展列表里已经启用 `Claude Auto Continue`。
+4. 如果之前安装过旧版本，删除旧扩展目录后重新用 GitHub 地址导入一次。
+
+从 `1.0.13` 开始，设置面板不再依赖固定目录名，所以无论安装目录叫 `auto-continue`、`claude-auto-continue`，还是 GitHub 安装器生成的其他名字，都应该可以正常显示。
+
 ## 支持范围
 
 目前主要支持：
@@ -136,4 +149,4 @@ data/default-user/settings.json
 
 ## 当前版本
 
-`1.0.12`
+`1.0.13`
