@@ -1,55 +1,139 @@
 # Claude Auto Continue
 
-Claude Auto Continue is a SillyTavern third-party extension plus a required SillyTavern core patch.
+这是一个 SillyTavern 第三方扩展，用来处理 Claude / OpenAI-compatible 渠道流式输出被中途截断的问题。
 
-It continues Claude/OpenAI-compatible streaming replies in the background when the stream ends before a configurable end marker appears. It is mainly built for Claude models behind OpenAI-compatible gateways that stop around an output limit.
+它的核心逻辑是：如果一条回复结束时还没有出现你设置的“结尾词”，并且不是你手动点了停止，就在后台继续调用 API，把后续内容接到同一条回复里；只要检测到结尾词，就停止继续调用。
 
-## Install
+> 注意：这个扩展不是纯前端插件。真正的后台续写发生在 SillyTavern 后端流式转发代码里，所以除了导入第三方扩展，还必须应用本仓库里的核心补丁。
 
-In SillyTavern, open the third-party extension installer and enter:
+## 安装
+
+在 SillyTavern 里打开第三方扩展安装器，输入这个 GitHub 地址：
 
 ```text
 https://github.com/huangsir1111/auto-continue
 ```
 
-Then install it for yourself or all users.
+安装完成后，先不要急着使用，还需要应用下面的核心补丁。
 
-## Required Core Patch
+## 必须应用核心补丁
 
-The extension UI alone is not enough. The background continuation runs inside SillyTavern's backend stream forwarding code, so the core patch must also be applied.
+进入你的 SillyTavern 根目录，比如：
 
-From your SillyTavern root folder, run:
+```powershell
+cd "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
+```
+
+先检查补丁能不能应用：
 
 ```powershell
 git apply --check "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
+```
+
+如果没有报错，再正式应用：
+
+```powershell
 git apply "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
 ```
 
-If your extension folder has a different name, adjust the path to the patch file.
+然后重启 SillyTavern 后端。
 
-Restart SillyTavern after applying the patch.
+如果你的扩展目录名字不是 `auto-continue`，请把命令里的路径改成你实际的扩展目录名。例如：
 
-## Settings
+```powershell
+git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/sillytavern-core-auto-continue.patch"
+```
 
-- Enable auto continue for Claude streaming: turns the feature on.
-- Show popup while continuing: shows a toast when a background continuation call starts.
-- End marker: generation stops continuing once this text appears. Example: `正文结束`.
-- Continue trigger:
-  - Missing end marker: continue after a non-manual stream end if the marker is missing.
-  - Token limit / likely Kiro 8k cut: only continue when the stream reports or strongly looks like a token-limit stop.
-- Max API calls per reply: safety cap for one reply.
-- Continuation prompt: prompt used for follow-up calls. Use `{{endMarker}}` to include the configured marker.
+## 设置说明
 
-Manual user stop is not treated as truncation.
+- `Enable auto continue for Claude streaming`：开启自动续写。
+- `Show popup while continuing`：后台继续调用 API 时弹出提示。
+- `End marker`：结尾词。只要回复里出现这个文本，就不再继续调用。默认是 `<disclaimer></disclaimer>`，你也可以改成 `正文结束`、`1 2 3 4 5` 等任意文本。
+- `Continue trigger`：
+  - `Missing end marker`：推荐模式。只要流式回复结束时没有结尾词，并且不是你手动停止，就继续调用。
+  - `Token limit / likely Kiro 8k cut`：保守模式。只有明确像 token 上限截断时才继续。
+- `Max API calls per reply`：单条回复最多允许后台续写几次，防止无限调用。
+- `Continuation prompt`：后台续写时发送给模型的提示词。可以用 `{{endMarker}}` 插入你设置的结尾词。
 
-## Supported Routes
+## 行为说明
 
-- Native SillyTavern Claude streaming.
-- OpenAI-compatible `/v1/chat/completions` streaming routes.
-- Several SillyTavern provider wrappers that use OpenAI-compatible chat completions.
+- 如果模型一次性输出到了结尾词，不管输出多少 token，都不会继续调用。
+- 如果中途断流、回复结束时没有结尾词，并且你没有手动停止，就会继续调用。
+- 如果你自己点了停止，不会被当成截断。
+- 默认模式不靠估算 token 判断截断，而是看“回复结束时有没有结尾词”。
+- 只有选择 `Token limit / likely Kiro 8k cut` 时，才会使用 token 上限或疑似截断特征作为判断依据。
 
-Gemini/Cohere-style non-OpenAI stream formats are not fully covered by this patch.
+## 支持范围
 
-## Version
+目前主要支持：
 
-Current version: `1.0.10`
+- SillyTavern 原生 Claude streaming。
+- OpenAI-compatible `/v1/chat/completions` streaming。
+- 部分使用 OpenAI-compatible chat completions 的 SillyTavern 渠道包装器。
+
+暂不完整支持：
+
+- Gemini / Cohere 这类非 OpenAI-compatible SSE 格式的流式接口。
+
+## 完全卸载
+
+如果只是暂时不用，可以在扩展设置里关闭 `Enable auto continue for Claude streaming`，这样就不会再给请求附加自动续写参数。
+
+如果想完全卸载，请按这个顺序来：
+
+1. 先停止 SillyTavern 后端。
+
+2. 进入 SillyTavern 根目录：
+
+```powershell
+cd "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
+```
+
+3. 先检查核心补丁是否可以反向撤销：
+
+```powershell
+git apply --check --reverse "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
+```
+
+4. 如果没有报错，正式撤销核心补丁：
+
+```powershell
+git apply --reverse "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
+```
+
+5. 删除第三方扩展目录：
+
+```powershell
+Remove-Item -LiteralPath "public/scripts/extensions/third-party/auto-continue" -Recurse -Force
+```
+
+6. 重启 SillyTavern。
+
+如果第 3 步提示找不到 patch 文件，通常是你已经先删除了扩展目录。重新下载本仓库，或重新安装一次扩展后，再执行反向补丁命令即可。
+
+如果你的扩展目录不是 `auto-continue`，同样把上面命令里的路径改成实际目录名。
+
+## 可选：清理用户设置
+
+扩展设置通常保存在用户的 SillyTavern 设置文件里。即使不清理，也不会影响使用；如果你想彻底清掉残留设置，可以在停止 SillyTavern 后编辑：
+
+```text
+data/default-user/settings.json
+```
+
+找到：
+
+```json
+"extension_settings": {
+  "claude_auto_continue": {
+  }
+}
+```
+
+删除其中的 `claude_auto_continue` 这一项，然后保存并重启 SillyTavern。
+
+多用户环境下，请到对应用户目录下处理对应的 `settings.json`。
+
+## 当前版本
+
+`1.0.11`

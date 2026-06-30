@@ -9,7 +9,7 @@ import {
 } from '../../../extensions.js';
 
 const MODULE_NAME = 'claude_auto_continue';
-const SETTINGS_VERSION = '1.0.10';
+const SETTINGS_VERSION = '1.0.11';
 
 const defaultSettings = {
     enabled: false,
@@ -147,10 +147,27 @@ function bindSettingsListeners() {
     $('#claude_auto_continue_prompt').on('input', saveSettingsFromUi);
 }
 
+async function renderSettingsTemplate() {
+    const templatePaths = [
+        'third-party/auto-continue',
+        'third-party/claude-auto-continue',
+    ];
+
+    for (const path of templatePaths) {
+        try {
+            return await renderExtensionTemplateAsync(path, 'settings');
+        } catch (error) {
+            console.warn(`Claude Auto Continue: failed to load settings template from ${path}`, error);
+        }
+    }
+
+    throw new Error('Claude Auto Continue: failed to load settings template');
+}
+
 export async function init() {
     getSettings();
 
-    const settingsHtml = await renderExtensionTemplateAsync('third-party/claude-auto-continue', 'settings');
+    const settingsHtml = await renderSettingsTemplate();
     $('#extensions_settings2').append(settingsHtml);
     loadSettingsToUi();
     bindSettingsListeners();

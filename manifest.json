@@ -1,12 +1,12 @@
 {
     "display_name": "Claude Auto Continue",
-    "description": "Automatically continues Claude/OpenAI-compatible streaming replies after token-limit truncation or until a configurable end marker appears.",
+    "description": "Claude/OpenAI-compatible replies can continue in the background until a configurable end marker appears.",
     "loading_order": 10,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "author": "Codex",
-    "version": "1.0.10",
+    "version": "1.0.11",
     "homepage": "https://github.com/huangsir1111/auto-continue",
     "hooks": {
         "activate": "init"
