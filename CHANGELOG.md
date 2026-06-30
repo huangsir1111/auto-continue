@@ -4,6 +4,7 @@
 
 - 文档补充前端第三方扩展和后端核心补丁的分别卸载方式。
 - 说明通过 GitHub 导入后，扩展真实目录可能在 `data/default-user/extensions`，不一定在 `public/scripts/extensions/third-party`。
+- 文档改成更适合新手的 Windows `cmd` 操作说明，从 `Win + R` 打开命令行开始写安装、打补丁和卸载步骤。
 
 ## 1.0.17
 

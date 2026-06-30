@@ -6,43 +6,154 @@
 
 > 注意：这个扩展不是纯前端插件。真正的后台续写发生在 SillyTavern 后端流式转发代码里，所以除了导入第三方扩展，还必须应用本仓库里的核心补丁。
 
-## 安装
+## 安装说明（零基础版）
 
-在 SillyTavern 里打开第三方扩展安装器，输入这个 GitHub 地址：
+这个扩展需要做两件事：
+
+1. 在 SillyTavern 前端导入第三方扩展。
+2. 在 SillyTavern 后端应用核心补丁。
+
+只做第 1 步，只会看到设置面板；真正的后台自动续写不会生效。必须两步都做完，并且重启 SillyTavern 后端。
+
+### 第一步：在酒馆前端导入扩展
+
+1. 打开 SillyTavern 网页。
+2. 打开“扩展”或“第三方扩展”管理页面。
+3. 找到“导入扩展 / Install extension / Import extension”之类的输入框。
+4. 输入这个 GitHub 地址：
 
 ```text
 https://github.com/huangsir1111/auto-continue
 ```
 
-安装完成后，先不要急着使用，还需要应用下面的核心补丁。
+5. 确认安装。
+6. 安装完成后，刷新一次 SillyTavern 网页。
+7. 在扩展列表里确认能看到 `Claude Auto Continue`。
 
-## 必须应用核心补丁
+### 第二步：打开命令行
 
-进入你的 SillyTavern 根目录，比如：
+1. 按键盘上的 `Win + R`。
+2. 弹出“运行”窗口后，输入：
 
-```powershell
-cd "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
+```text
+cmd
 ```
 
-先检查补丁能不能应用：
+3. 按回车，会打开一个黑色命令行窗口。
 
-```powershell
-git apply --check "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
+### 第三步：进入 SillyTavern 根目录
+
+你需要进入自己的 SillyTavern 文件夹。
+
+如果你的 SillyTavern 在这个位置：
+
+```text
+D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern
 ```
 
-如果没有报错，再正式应用：
+就在 cmd 里复制粘贴这一行，然后按回车：
 
-```powershell
-git apply "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
+```cmd
+cd /d "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
 ```
 
-然后重启 SillyTavern 后端。
+如果你的 SillyTavern 在别的位置，把上面的路径换成你自己的路径。
 
-如果你的扩展目录名字不是 `auto-continue`，请把命令里的路径改成你实际的扩展目录名。例如：
+判断有没有进对目录：输入下面这行，然后按回车：
 
-```powershell
-git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/sillytavern-core-auto-continue.patch"
+```cmd
+dir
 ```
+
+如果你能看到 `public`、`data`、`src`、`package.json` 这些文件或文件夹，说明位置基本对了。
+
+### 第四步：找到扩展安装目录
+
+不同 SillyTavern 版本、不同用户配置下，GitHub 导入的扩展目录可能不一样。
+
+在 cmd 里复制粘贴下面这行，然后按回车：
+
+```cmd
+for /d %G in ("data\default-user\extensions\*auto*" "data\default-user\extensions\*continue*" "data\default-user\extensions\*claude*" "public\scripts\extensions\third-party\*auto*" "public\scripts\extensions\third-party\*continue*" "public\scripts\extensions\third-party\*claude*") do @echo %G
+```
+
+你可能会看到类似：
+
+```text
+data\default-user\extensions\auto-continue
+```
+
+或者：
+
+```text
+public\scripts\extensions\third-party\auto-continue
+```
+
+后面应用补丁时，要用你自己实际显示出来的目录。
+
+如果什么都没显示，说明扩展可能没有导入成功。请先回到酒馆前端重新导入 GitHub 地址。
+
+### 第五步：检查核心补丁能不能应用
+
+如果你的扩展目录是：
+
+```text
+data\default-user\extensions\auto-continue
+```
+
+就输入：
+
+```cmd
+git apply --check "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
+```
+
+如果你的扩展目录是：
+
+```text
+public\scripts\extensions\third-party\auto-continue
+```
+
+就输入：
+
+```cmd
+git apply --check "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
+```
+
+如果执行后没有任何输出，直接回到下一行命令提示符，说明检查通过。
+
+如果显示 `error`，不要继续执行正式应用命令。常见原因：
+
+- 你没有进入 SillyTavern 根目录。
+- 你填错了扩展目录。
+- 你的 SillyTavern 版本和补丁不兼容。
+- 你已经应用过这个补丁了。
+
+### 第六步：正式应用核心补丁
+
+确认上一步没有报错后，再执行正式应用。
+
+如果你的扩展目录是 `data\default-user\extensions\auto-continue`，输入：
+
+```cmd
+git apply "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
+```
+
+如果你的扩展目录是 `public\scripts\extensions\third-party\auto-continue`，输入：
+
+```cmd
+git apply "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
+```
+
+如果没有报错，说明后端补丁已经应用。
+
+### 第七步：重启 SillyTavern 后端
+
+1. 关闭正在运行的 SillyTavern 后端窗口。
+2. 重新打开 SillyTavern 启动器或重新运行你的启动脚本。
+3. 重新进入 SillyTavern 网页。
+4. 打开 `Claude Auto Continue` 设置，勾选启用。
+
+到这里才算安装完成。
 
 ## 设置说明
 
@@ -109,28 +220,36 @@ git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/si
 
 如果酒馆界面删不掉，可以手动删除扩展目录。先进入你的 SillyTavern 根目录，例如：
 
-```powershell
-cd "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
+1. 按 `Win + R`。
+2. 输入：
+
+```text
+cmd
 ```
 
-然后找一下扩展真实安装在哪个目录：
+3. 按回车。
+4. 在打开的黑色命令行窗口里输入你的 SillyTavern 路径，例如：
 
-```powershell
-Get-ChildItem -Directory "data\default-user\extensions","public\scripts\extensions\third-party" -ErrorAction SilentlyContinue |
-Where-Object { $_.Name -match "auto|continue|claude" } |
-Select-Object FullName
+```cmd
+cd /d "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
+```
+
+5. 找一下扩展真实安装在哪个目录：
+
+```cmd
+for /d %G in ("data\default-user\extensions\*auto*" "data\default-user\extensions\*continue*" "data\default-user\extensions\*claude*" "public\scripts\extensions\third-party\*auto*" "public\scripts\extensions\third-party\*continue*" "public\scripts\extensions\third-party\*claude*") do @echo %G
 ```
 
 找到后删除对应目录，例如：
 
-```powershell
-Remove-Item -LiteralPath "data\default-user\extensions\auto-continue" -Recurse -Force
+```cmd
+rmdir /s /q "data\default-user\extensions\auto-continue"
 ```
 
 或者：
 
-```powershell
-Remove-Item -LiteralPath "public\scripts\extensions\third-party\auto-continue" -Recurse -Force
+```cmd
+rmdir /s /q "public\scripts\extensions\third-party\auto-continue"
 ```
 
 注意：酒馆界面里会把它显示成 `third-party/...`，但真实目录不一定都在 `public\scripts\extensions\third-party`。通过 GitHub 导入的本地用户扩展，常见位置是 `data\default-user\extensions`。
@@ -141,41 +260,65 @@ Remove-Item -LiteralPath "public\scripts\extensions\third-party\auto-continue" -
 
 1. 先停止 SillyTavern 后端。
 
-2. 进入 SillyTavern 根目录：
+2. 按 `Win + R`，输入 `cmd`，按回车。
 
-```powershell
-cd "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
+3. 进入 SillyTavern 根目录：
+
+```cmd
+cd /d "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
 ```
 
-3. 先检查核心补丁是否可以反向撤销：
+4. 先找一下扩展真实安装目录：
 
-```powershell
-git apply --check --reverse "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
+```cmd
+for /d %G in ("data\default-user\extensions\*auto*" "data\default-user\extensions\*continue*" "data\default-user\extensions\*claude*" "public\scripts\extensions\third-party\*auto*" "public\scripts\extensions\third-party\*continue*" "public\scripts\extensions\third-party\*claude*") do @echo %G
 ```
 
-4. 如果没有报错，正式撤销核心补丁：
+5. 先检查核心补丁是否可以反向撤销。
 
-```powershell
-git apply --reverse "public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch"
+如果你的扩展目录是 `data\default-user\extensions\auto-continue`，输入：
+
+```cmd
+git apply --check --reverse "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
-5. 删除第三方扩展目录。先查找真实目录：
+如果你的扩展目录是 `public\scripts\extensions\third-party\auto-continue`，输入：
 
-```powershell
-Get-ChildItem -Directory "data\default-user\extensions","public\scripts\extensions\third-party" -ErrorAction SilentlyContinue |
-Where-Object { $_.Name -match "auto|continue|claude" } |
-Select-Object FullName
+```cmd
+git apply --check --reverse "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
-再删除查到的目录，例如：
+如果没有报错，再正式撤销核心补丁。
 
-```powershell
-Remove-Item -LiteralPath "public\scripts\extensions\third-party\auto-continue" -Recurse -Force
+如果你的扩展目录是 `data\default-user\extensions\auto-continue`，输入：
+
+```cmd
+git apply --reverse "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
-6. 重启 SillyTavern。
+如果你的扩展目录是 `public\scripts\extensions\third-party\auto-continue`，输入：
 
-如果第 3 步提示找不到 patch 文件，通常是你已经先删除了扩展目录。重新下载本仓库，或重新安装一次扩展后，再执行反向补丁命令即可。
+```cmd
+git apply --reverse "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
+```
+
+6. 删除第三方扩展目录。
+
+如果你的扩展目录是 `data\default-user\extensions\auto-continue`，输入：
+
+```cmd
+rmdir /s /q "data\default-user\extensions\auto-continue"
+```
+
+如果你的扩展目录是 `public\scripts\extensions\third-party\auto-continue`，输入：
+
+```cmd
+rmdir /s /q "public\scripts\extensions\third-party\auto-continue"
+```
+
+7. 重启 SillyTavern。
+
+如果第 5 步提示找不到 patch 文件，通常是你已经先删除了扩展目录。重新下载本仓库，或重新安装一次扩展后，再执行反向补丁命令即可。
 
 如果你的扩展目录不是 `auto-continue`，同样把上面命令里的路径改成实际目录名。
 
