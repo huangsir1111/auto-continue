@@ -61,7 +61,7 @@ dir
 ### 第四步：检查核心补丁能不能应用
 
 ```cmd
-git apply --check "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
+git apply --check "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
 如果没有报错，再执行下一步。
@@ -69,13 +69,13 @@ git apply --check "data\default-user\extensions\auto-continue\patches\sillytaver
 如果你的扩展目录名字不是 `auto-continue`，请把命令里的路径改成你实际的扩展目录名。例如：
 
 ```cmd
-git apply --check "data\default-user\extensions\claude-auto-continue\patches\sillytavern-core-auto-continue.patch"
+git apply --check "public\scripts\extensions\third-party\claude-auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
 ### 第五步：正式应用核心补丁
 
 ```cmd
-git apply "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
+git apply "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
 然后重启 SillyTavern 后端。
@@ -83,7 +83,7 @@ git apply "data\default-user\extensions\auto-continue\patches\sillytavern-core-a
 如果你的扩展目录名字不是 `auto-continue`，同样把命令里的路径改成你实际的扩展目录名。例如：
 
 ```cmd
-git apply "data\default-user\extensions\claude-auto-continue\patches\sillytavern-core-auto-continue.patch"
+git apply "public\scripts\extensions\third-party\claude-auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
 ## 设置说明
@@ -168,16 +168,16 @@ cd /d "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
 然后删除对应目录，例如：
 
 ```cmd
-rmdir /s /q "data\default-user\extensions\auto-continue"
-```
-
-或者：
-
-```cmd
 rmdir /s /q "public\scripts\extensions\third-party\auto-continue"
 ```
 
-注意：酒馆界面里会把它显示成 `third-party/...`，但真实目录不一定都在 `public\scripts\extensions\third-party`。通过 GitHub 导入的本地用户扩展，常见位置是 `data\default-user\extensions`。
+如果你的扩展目录名字不是 `auto-continue`，把命令里的目录名改成你实际看到的名字。例如：
+
+```cmd
+rmdir /s /q "public\scripts\extensions\third-party\claude-auto-continue"
+```
+
+注意：这里的本地目录是 `public\scripts\extensions\third-party`，不是 `data\default-user\extensions`。
 
 ### 情况二：已经应用过后端核心补丁
 
@@ -196,25 +196,25 @@ cd /d "D:\MySpecialFolder\SillyTavern-Launcher\SillyTavern"
 4. 先检查核心补丁是否可以反向撤销：
 
 ```cmd
-git apply --check --reverse "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
+git apply --check --reverse "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
 5. 如果没有报错，正式撤销核心补丁：
 
 ```cmd
-git apply --reverse "data\default-user\extensions\auto-continue\patches\sillytavern-core-auto-continue.patch"
+git apply --reverse "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
 6. 删除第三方扩展目录，例如：
 
 ```cmd
-rmdir /s /q "data\default-user\extensions\auto-continue"
+rmdir /s /q "public\scripts\extensions\third-party\auto-continue"
 ```
 
-如果你的扩展目录确实在 `public\scripts\extensions\third-party`，也可以删除这个：
+如果你的扩展目录名字不是 `auto-continue`，把命令里的目录名改成你实际看到的名字。例如：
 
 ```cmd
-rmdir /s /q "public\scripts\extensions\third-party\auto-continue"
+rmdir /s /q "public\scripts\extensions\third-party\claude-auto-continue"
 ```
 
 7. 重启 SillyTavern。
