@@ -1,0 +1,1009 @@
+diff --git a/public/scripts/events.js b/public/scripts/events.js
+index 852eaa7fc..b4392e917 100644
+--- a/public/scripts/events.js
++++ b/public/scripts/events.js
+@@ -62,6 +62,7 @@ export const event_types = {
+     WORLD_INFO_ACTIVATED: 'world_info_activated',
+     TEXT_COMPLETION_SETTINGS_READY: 'text_completion_settings_ready',
+     CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
++    CLAUDE_AUTO_CONTINUE_STATUS: 'claude_auto_continue_status',
+     CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
+     CHARACTER_FIRST_MESSAGE_SELECTED: 'character_first_message_selected',
+     // TODO: Naming convention is inconsistent with other events
+diff --git a/public/scripts/openai.js b/public/scripts/openai.js
+index 97b96658e..68538f76b 100644
+--- a/public/scripts/openai.js
++++ b/public/scripts/openai.js
+@@ -3080,6 +3080,11 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
+                 tryParseStreamingError(response, rawData);
+                 const parsed = JSON.parse(rawData);
+ 
++                if (parsed?.type === 'claude_auto_continue_status') {
++                    await eventSource.emit(event_types.CLAUDE_AUTO_CONTINUE_STATUS, parsed);
++                    continue;
++                }
++
+                 if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
+                     const swipeIndex = parsed.choices[0].index - 1;
+                     // FIXME: state.reasoning should be an array to support multi-swipe
+diff --git a/src/endpoints/backends/chat-completions.js b/src/endpoints/backends/chat-completions.js
+index 71e031c2c..1c92ca428 100644
+--- a/src/endpoints/backends/chat-completions.js
++++ b/src/endpoints/backends/chat-completions.js
+@@ -1,4 +1,6 @@
+ /* eslint-disable dot-notation */
++import fs from 'node:fs';
++import path from 'node:path';
+ import process from 'node:process';
+ import util from 'node:util';
+ import express from 'express';
+@@ -16,6 +18,7 @@ import {
+     OPENAI_REASONING_EFFORT_MODELS,
+     OPENAI_VERBOSITY_MODELS,
+     OPENROUTER_HEADERS,
++    SETTINGS_FILE,
+     VERTEX_SAFETY,
+     SILICONFLOW_ENDPOINT,
+     MINIMAX_ENDPOINT,
+@@ -105,6 +108,21 @@ const cachingAtDepth = (() => {
+     return Number.isInteger(value) && value >= 0 ? value : -1;
+ })();
+ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', true, 'boolean');
++const CLAUDE_AUTO_CONTINUE_MODULE_NAME = 'claude_auto_continue';
++const CLAUDE_AUTO_CONTINUE_DEFAULT_END_MARKER = '<disclaimer></disclaimer>';
++const CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_CALLS = 6;
++const CLAUDE_AUTO_CONTINUE_MAX_CALLS_LIMIT = 20;
++const CLAUDE_AUTO_CONTINUE_DEFAULT_PROMPT = 'Continue exactly from where you stopped. Do not repeat any previous text. Keep writing until you output the ending marker: {{endMarker}}';
++const CLAUDE_AUTO_CONTINUE_TRIGGER_TOKEN_LIMIT = 'token_limit';
++const CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER = 'missing_marker';
++const CLAUDE_AUTO_CONTINUE_DEFAULT_TRIGGER = CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER;
++const CLAUDE_AUTO_CONTINUE_TRIGGERS = new Set([
++    CLAUDE_AUTO_CONTINUE_TRIGGER_TOKEN_LIMIT,
++    CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER,
++]);
++const OPENAI_TOKEN_LIMIT_FINISH_REASONS = new Set(['length', 'max_tokens']);
++const OPENAI_KIRO_LIKELY_LIMIT_TOKENS = 7600;
++const claudeAutoContinueSettingsCache = new Map();
+ 
+ /**
+  * Cache for cacheable (writing) OpenRouter model IDs.
+@@ -112,6 +130,792 @@ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', t
+  */
+ const openRouterCacheableModels = [];
+ 
++/**
++ * Reads Claude auto-continue settings from the current user's saved settings.
++ * This is a backend fallback for already-open browser tabs that have not loaded the extension script yet.
++ * @param {express.Request} request Express request
++ * @returns {object}
++ */
++function readClaudeAutoContinueSettingsFromUserSettings(request) {
++    const userRoot = request.user?.directories?.root;
++    if (!userRoot) {
++        return {};
++    }
++
++    const settingsPath = path.join(userRoot, SETTINGS_FILE);
++
++    try {
++        const stat = fs.statSync(settingsPath);
++        const cached = claudeAutoContinueSettingsCache.get(settingsPath);
++
++        if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
++            return cached.settings;
++        }
++
++        const rawSettings = fs.readFileSync(settingsPath, 'utf8');
++        const parsedSettings = tryParse(rawSettings) || {};
++        const settings = parsedSettings?.extension_settings?.[CLAUDE_AUTO_CONTINUE_MODULE_NAME] || {};
++        claudeAutoContinueSettingsCache.set(settingsPath, {
++            mtimeMs: stat.mtimeMs,
++            size: stat.size,
++            settings,
++        });
++        return settings;
++    } catch (error) {
++        console.warn('Claude Auto Continue: failed to read saved extension settings:', error.message);
++        return {};
++    }
++}
++
++/**
++ * Gets Claude auto-continue options from the request body or saved user settings.
++ * @param {express.Request} request Express request
++ * @returns {{enabled: boolean, endMarker: string, maxCalls: number, continuationPrompt: string, continueTrigger: string, source: string}}
++ */
++function getClaudeAutoContinueOptions(request) {
++    const requestSettings = request.body.claude_auto_continue;
++    const hasRequestSettings = requestSettings && typeof requestSettings === 'object' && Object.keys(requestSettings).length > 0;
++    const savedSettings = hasRequestSettings ? {} : readClaudeAutoContinueSettingsFromUserSettings(request);
++    const hasSavedSettings = Object.keys(savedSettings).length > 0;
++    const settings = hasRequestSettings ? requestSettings : savedSettings;
++    const enabled = settings.enabled === true || request.body.claude_auto_continue_enabled === true;
++    const endMarker = String(settings.end_marker ?? request.body.claude_auto_continue_end_marker ?? CLAUDE_AUTO_CONTINUE_DEFAULT_END_MARKER).trim();
++    const maxCallsValue = Number(settings.max_calls ?? request.body.claude_auto_continue_max_calls ?? CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_CALLS);
++    const maxCalls = Number.isFinite(maxCallsValue)
++        ? Math.min(Math.max(Math.floor(maxCallsValue), 1), CLAUDE_AUTO_CONTINUE_MAX_CALLS_LIMIT)
++        : CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_CALLS;
++    const continuationPrompt = String(settings.continuation_prompt ?? request.body.claude_auto_continue_prompt ?? CLAUDE_AUTO_CONTINUE_DEFAULT_PROMPT).trim()
++        || CLAUDE_AUTO_CONTINUE_DEFAULT_PROMPT;
++    const requestedTrigger = String(settings.continue_trigger ?? request.body.claude_auto_continue_trigger ?? CLAUDE_AUTO_CONTINUE_DEFAULT_TRIGGER).trim();
++    const continueTrigger = CLAUDE_AUTO_CONTINUE_TRIGGERS.has(requestedTrigger)
++        ? requestedTrigger
++        : CLAUDE_AUTO_CONTINUE_DEFAULT_TRIGGER;
++
++    return {
++        enabled: enabled && endMarker.length > 0,
++        endMarker,
++        maxCalls,
++        continuationPrompt,
++        continueTrigger,
++        source: hasRequestSettings ? 'request' : hasSavedSettings ? 'user-settings' : 'defaults',
++    };
++}
++
++/**
++ * Logs the auto-continue decision without exposing prompts or secrets.
++ * @param {string} provider Provider label
++ * @param {object} requestBody Upstream request body
++ * @param {{enabled: boolean, endMarker: string, maxCalls: number, continueTrigger: string, source: string}} options Auto-continue options
++ * @param {boolean} canUseMessages Whether the request has chat messages that can be continued
++ */
++function logClaudeAutoContinueDecision(provider, requestBody, options, canUseMessages) {
++    console.info('Claude Auto Continue:', {
++        provider,
++        enabled: options.enabled,
++        source: options.source,
++        end_marker: options.endMarker,
++        continue_trigger: options.continueTrigger,
++        max_calls: options.maxCalls,
++        can_use_messages: canUseMessages,
++        model: requestBody?.model,
++        stream: requestBody?.stream,
++    });
++}
++
++/**
++ * Checks whether the generated text contains the configured end marker.
++ * @param {string} text Generated assistant text
++ * @param {string} marker Configured end marker
++ * @returns {boolean}
++ */
++function hasClaudeAutoContinueEndMarker(text, marker) {
++    if (!marker) {
++        return false;
++    }
++
++    if (text.includes(marker)) {
++        return true;
++    }
++
++    const emptyTagMatch = marker.match(/^<([a-zA-Z][\w:-]*)>\s*<\/\1>$/);
++    if (!emptyTagMatch) {
++        return false;
++    }
++
++    const tagName = emptyTagMatch[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++    return new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>`).test(text);
++}
++
++/**
++ * Estimates completion tokens well enough to catch providers that hide max-token stops.
++ * @param {string} text Text to estimate
++ * @returns {number} Estimated token count
++ */
++function estimateClaudeAutoContinueTokens(text) {
++    if (!text) {
++        return 0;
++    }
++
++    const cjkCharacters = text.match(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/gu)?.length || 0;
++    const nonCjkText = text.replace(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/gu, '');
++    const nonCjkCharacters = nonCjkText.replace(/\s+/g, ' ').trim().length;
++
++    return cjkCharacters + Math.ceil(nonCjkCharacters / 4);
++}
++
++/**
++ * Gets the requested completion token limit from an OpenAI-compatible request.
++ * @param {object} requestBody OpenAI-compatible request body
++ * @returns {number}
++ */
++function getOpenAiCompletionTokenLimit(requestBody) {
++    const value = Number(requestBody?.max_completion_tokens ?? requestBody?.max_tokens);
++    return Number.isFinite(value) && value > 0 ? value : 0;
++}
++
++/**
++ * Checks whether the OpenAI-compatible request is probably using Kiro.
++ * @param {object} requestBody OpenAI-compatible request body
++ * @returns {boolean}
++ */
++function isLikelyKiroRequest(requestBody) {
++    return String(requestBody?.model || '').toLowerCase().includes('kiro');
++}
++
++/**
++ * Checks whether an OpenAI-compatible stream probably stopped due to output token limits.
++ * @param {{finishReason: string, passTokenEstimate: number}} result Stream result
++ * @param {object} requestBody OpenAI-compatible request body
++ * @returns {boolean}
++ */
++function isOpenAiTokenLimitStop(result, requestBody) {
++    if (OPENAI_TOKEN_LIMIT_FINISH_REASONS.has(result.finishReason)) {
++        return true;
++    }
++
++    const requestedLimit = getOpenAiCompletionTokenLimit(requestBody);
++    if (requestedLimit > 0 && result.passTokenEstimate >= Math.floor(requestedLimit * 0.9)) {
++        return true;
++    }
++
++    return isLikelyKiroRequest(requestBody) && result.passTokenEstimate >= OPENAI_KIRO_LIKELY_LIMIT_TOKENS;
++}
++
++/**
++ * Applies the end marker to the continuation prompt.
++ * @param {string} prompt Prompt template
++ * @param {string} endMarker End marker
++ * @returns {string}
++ */
++function formatClaudeContinuationPrompt(prompt, endMarker) {
++    const replacements = {
++        '{{endMarker}}': endMarker,
++        '{{end_marker}}': endMarker,
++    };
++
++    return Object.entries(replacements).reduce((text, [key, value]) => text.replaceAll(key, value), prompt);
++}
++
++/**
++ * Builds Claude messages for a continuation pass.
++ * @param {any[]} originalMessages Original converted Claude messages
++ * @param {string} assistantText Assistant text accumulated so far
++ * @param {string} continuationPrompt Continuation prompt
++ * @param {string} endMarker End marker
++ * @returns {any[]}
++ */
++function createClaudeContinuationMessages(originalMessages, assistantText, continuationPrompt, endMarker) {
++    const messages = structuredClone(originalMessages);
++
++    if (assistantText) {
++        messages.push({ role: 'assistant', content: assistantText });
++    }
++
++    messages.push({
++        role: 'user',
++        content: formatClaudeContinuationPrompt(continuationPrompt, endMarker),
++    });
++
++    return messages;
++}
++
++/**
++ * Builds OpenAI-compatible messages for a continuation pass.
++ * @param {any[]} originalMessages Original OpenAI-compatible messages
++ * @param {string} assistantText Assistant text accumulated so far
++ * @param {string} continuationPrompt Continuation prompt
++ * @param {string} endMarker End marker
++ * @returns {any[]}
++ */
++function createOpenAiContinuationMessages(originalMessages, assistantText, continuationPrompt, endMarker) {
++    const messages = structuredClone(originalMessages);
++
++    if (assistantText) {
++        messages.push({ role: 'assistant', content: assistantText });
++    }
++
++    messages.push({
++        role: 'user',
++        content: formatClaudeContinuationPrompt(continuationPrompt, endMarker),
++    });
++
++    return messages;
++}
++
++/**
++ * Finds the next SSE event separator in a buffer.
++ * @param {string} buffer SSE text buffer
++ * @returns {{index: number, length: number} | null}
++ */
++function findSseSeparator(buffer) {
++    const separators = [
++        { index: buffer.indexOf('\r\n\r\n'), length: 4 },
++        { index: buffer.indexOf('\n\n'), length: 2 },
++        { index: buffer.indexOf('\r\r'), length: 2 },
++    ].filter(separator => separator.index !== -1);
++
++    if (separators.length === 0) {
++        return null;
++    }
++
++    return separators.reduce((earliest, separator) => separator.index < earliest.index ? separator : earliest);
++}
++
++/**
++ * Parses a single SSE event block.
++ * @param {string} block SSE event block
++ * @returns {{data: string, event: string}}
++ */
++function parseSseBlock(block) {
++    const data = [];
++    let event = '';
++
++    for (const line of block.split(/\r\n|\r|\n/)) {
++        if (line.startsWith('data:')) {
++            data.push(line.slice(5).trimStart());
++        } else if (line.startsWith('event:')) {
++            event = line.slice(6).trim();
++        }
++    }
++
++    return { data: data.join('\n'), event };
++}
++
++/**
++ * Sends a frontend-only auto-continue status event over the same SSE stream.
++ * @param {express.Response} response Express response
++ * @param {number} call Current Claude API call number
++ * @param {number} maxCalls Maximum Claude API calls
++ */
++function writeClaudeAutoContinueStatus(response, call, maxCalls) {
++    if (response.destroyed || response.writableEnded) {
++        return;
++    }
++
++    response.write(`data: ${JSON.stringify({
++        type: 'claude_auto_continue_status',
++        call,
++        max_calls: maxCalls,
++    })}\n\n`);
++    response.flush?.();
++}
++
++/**
++ * Writes one SSE block to the client and flushes it immediately when supported.
++ * @param {express.Response} response Express response
++ * @param {string} block SSE event block without the trailing separator
++ */
++function writeSseBlock(response, block) {
++    response.write(`${block}\n\n`);
++    response.flush?.();
++}
++
++/**
++ * Forwards one Claude streaming response while collecting text and stop metadata.
++ * @param {import('node-fetch').Response} fetchResponse Fetch response from Claude
++ * @param {express.Response} response Express response
++ * @param {{finalPass: boolean, endMarker: string, assistantText: string}} options Stream options
++ * @returns {Promise<{assistantText: string, stopReason: string, endMarkerFound: boolean}>}
++ */
++async function forwardClaudeAutoContinueStream(fetchResponse, response, options) {
++    if (!fetchResponse.ok) {
++        const rawErrorText = await fetchResponse.text();
++        const detail = rawErrorText || 'Unknown error occurred';
++        console.warn(`Claude auto-continue streaming request failed with status ${fetchResponse.status} ${fetchResponse.statusText}: ${detail}`);
++
++        if (!response.headersSent) {
++            response.statusCode = fetchResponse.status === 401 ? 400 : fetchResponse.status;
++            response.statusMessage = fetchResponse.statusText;
++        }
++
++        response.end(rawErrorText, 'utf-8');
++        return {
++            assistantText: options.assistantText,
++            stopReason: '',
++            endMarkerFound: false,
++        };
++    }
++
++    if (!response.headersSent) {
++        response.statusCode = fetchResponse.status;
++        response.statusMessage = fetchResponse.statusText;
++        response.setHeader('Content-Type', fetchResponse.headers.get('content-type') || 'text/event-stream');
++        response.setHeader('Cache-Control', 'no-cache');
++        response.setHeader('Connection', 'keep-alive');
++    }
++
++    const decoder = new util.TextDecoder();
++    let buffer = '';
++    let assistantText = options.assistantText;
++    let stopReason = '';
++    let endMarkerFound = hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
++
++    const processBlock = (block) => {
++        if (!block.trim()) {
++            return;
++        }
++
++        const parsed = parseSseBlock(block);
++        const isDone = parsed.data.trim() === '[DONE]';
++
++        if (!isDone || options.finalPass) {
++            writeSseBlock(response, block);
++        }
++
++        if (isDone) {
++            return;
++        }
++
++        const json = tryParse(parsed.data);
++        if (!json) {
++            return;
++        }
++
++        const textDelta = json?.type === 'content_block_delta' && typeof json?.delta?.text === 'string'
++            ? json.delta.text
++            : '';
++
++        if (textDelta) {
++            assistantText += textDelta;
++            endMarkerFound ||= hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
++        }
++
++        if (json?.type === 'message_delta' && typeof json?.delta?.stop_reason === 'string') {
++            stopReason = json.delta.stop_reason;
++        }
++    };
++
++    if (fetchResponse.body) {
++        for await (const chunk of fetchResponse.body) {
++            buffer += decoder.decode(chunk, { stream: true });
++
++            while (true) {
++                const separator = findSseSeparator(buffer);
++                if (!separator) {
++                    break;
++                }
++
++                const block = buffer.slice(0, separator.index);
++                buffer = buffer.slice(separator.index + separator.length);
++                processBlock(block);
++            }
++        }
++    }
++
++    buffer += decoder.decode();
++    if (buffer.trim()) {
++        processBlock(buffer);
++    }
++
++    return { assistantText, stopReason, endMarkerFound };
++}
++
++/**
++ * Streams Claude with automatic continuation when the provider stops at max_tokens.
++ * @param {import('node-fetch').Response} initialResponse Initial Claude response
++ * @param {express.Response} response Express response
++ * @param {object} requestBody Claude request body
++ * @param {string} apiUrl Claude API base URL
++ * @param {string} apiKey Claude API key
++ * @param {object} additionalHeaders Additional Claude headers
++ * @param {AbortSignal} signal Abort signal
++ * @param {{enabled: boolean, endMarker: string, maxCalls: number, continuationPrompt: string, continueTrigger: string}} options Auto-continue options
++ * @returns {Promise<void>}
++ */
++async function streamClaudeWithAutoContinue(initialResponse, response, requestBody, apiUrl, apiKey, additionalHeaders, signal, options) {
++    let fetchResponse = initialResponse;
++    let assistantText = '';
++
++    for (let callIndex = 0; callIndex < options.maxCalls; callIndex++) {
++        const finalPass = callIndex === options.maxCalls - 1;
++        const result = await forwardClaudeAutoContinueStream(fetchResponse, response, {
++            finalPass,
++            endMarker: options.endMarker,
++            assistantText,
++        });
++
++        assistantText = result.assistantText;
++        const canContinue = callIndex < options.maxCalls - 1 && !signal.aborted && !response.destroyed && !response.writableEnded;
++        const stoppedByExplicitBoundary = ['stop_sequence', 'tool_use'].includes(result.stopReason);
++        const triggerMatched = options.continueTrigger === CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER
++            ? !stoppedByExplicitBoundary
++            : result.stopReason === 'max_tokens';
++        const shouldContinue = !result.endMarkerFound && canContinue && triggerMatched;
++
++        if (!shouldContinue) {
++            if (!response.destroyed) {
++                response.end();
++            }
++            return;
++        }
++
++        const continuationBody = structuredClone(requestBody);
++        continuationBody.messages = createClaudeContinuationMessages(requestBody.messages, assistantText, options.continuationPrompt, options.endMarker);
++
++        writeClaudeAutoContinueStatus(response, callIndex + 2, options.maxCalls);
++        console.debug(`Claude auto-continue pass ${callIndex + 2}/${options.maxCalls}:`, continuationBody);
++
++        fetchResponse = await fetch(apiUrl + '/messages', {
++            method: 'POST',
++            signal,
++            body: JSON.stringify(continuationBody),
++            headers: {
++                'Content-Type': 'application/json',
++                'anthropic-version': '2023-06-01',
++                'x-api-key': apiKey,
++                ...additionalHeaders,
++            },
++        });
++    }
++
++    if (!response.destroyed) {
++        response.end();
++    }
++}
++
++/**
++ * Extracts visible assistant text from an OpenAI-compatible streaming chunk.
++ * @param {object} json Parsed streaming chunk
++ * @returns {string}
++ */
++function getOpenAiStreamChunkText(json) {
++    if (!Array.isArray(json?.choices)) {
++        return '';
++    }
++
++    return json.choices
++        .map(choice => choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '')
++        .filter(text => typeof text === 'string')
++        .join('');
++}
++
++/**
++ * Gets the first terminal finish reason from an OpenAI-compatible streaming chunk.
++ * @param {object} json Parsed streaming chunk
++ * @returns {string}
++ */
++function getOpenAiStreamFinishReason(json) {
++    if (!Array.isArray(json?.choices)) {
++        return '';
++    }
++
++    const choice = json.choices.find(choice => typeof choice?.finish_reason === 'string');
++    return choice?.finish_reason || '';
++}
++
++/**
++ * Creates a writer that forwards complete SSE events while suppressing upstream [DONE] markers.
++ * @param {express.Response} response Express response
++ * @returns {{write: (text: string) => void, flush: () => void}}
++ */
++function createOpenAiAutoContinueWriter(response) {
++    let buffer = '';
++    let forwardedEvents = 0;
++
++    return {
++        write(text) {
++            if (!text || response.destroyed || response.writableEnded) {
++                return;
++            }
++
++            buffer += text;
++
++            while (true) {
++                const separator = findSseSeparator(buffer);
++                if (!separator) {
++                    break;
++                }
++
++                const block = buffer.slice(0, separator.index);
++                buffer = buffer.slice(separator.index + separator.length);
++
++                if (!block.trim()) {
++                    continue;
++                }
++
++                const parsed = parseSseBlock(block);
++
++                if (parsed.data.trim() === '[DONE]') {
++                    continue;
++                }
++
++                writeSseBlock(response, block);
++
++                forwardedEvents++;
++                if (forwardedEvents === 1) {
++                    console.info('OpenAI-compatible auto-continue first SSE event forwarded to client:', {
++                        length: block.length,
++                    });
++                }
++            }
++        },
++        flush() {
++            if (response.destroyed || response.writableEnded) {
++                buffer = '';
++                return;
++            }
++
++            if (buffer.trim()) {
++                const parsed = parseSseBlock(buffer);
++                if (parsed.data.trim() !== '[DONE]') {
++                    writeSseBlock(response, buffer);
++                }
++            }
++
++            buffer = '';
++        },
++    };
++}
++
++/**
++ * Writes the final OpenAI-compatible SSE done marker after all continuation decisions are complete.
++ * @param {express.Response} response Express response
++ */
++function writeOpenAiDone(response) {
++    if (!response.destroyed && !response.writableEnded) {
++        response.write('data: [DONE]\n\n');
++        response.flush?.();
++    }
++}
++
++/**
++ * Extracts assistant text and finish metadata from raw OpenAI-compatible SSE text.
++ * @param {string} rawText Raw SSE text
++ * @param {string} previousAssistantText Assistant text accumulated before this pass
++ * @param {string} endMarker Configured end marker
++ * @returns {{assistantText: string, finishReason: string, endMarkerFound: boolean, passTokenEstimate: number}}
++ */
++function collectOpenAiAutoContinueMetadata(rawText, previousAssistantText, endMarker) {
++    let assistantText = previousAssistantText;
++    let passText = '';
++    let finishReason = '';
++    let endMarkerFound = hasClaudeAutoContinueEndMarker(assistantText, endMarker);
++    const normalizedText = rawText.replace(/\r\n|\r/g, '\n');
++
++    for (const line of normalizedText.split('\n')) {
++        if (!line.startsWith('data:')) {
++            continue;
++        }
++
++        const data = line.slice(5).trimStart();
++        if (!data || data.trim() === '[DONE]') {
++            continue;
++        }
++
++        const json = tryParse(data);
++        if (!json) {
++            continue;
++        }
++
++        const textDelta = getOpenAiStreamChunkText(json);
++        if (textDelta) {
++            assistantText += textDelta;
++            passText += textDelta;
++            endMarkerFound ||= hasClaudeAutoContinueEndMarker(assistantText, endMarker);
++        }
++
++        finishReason = getOpenAiStreamFinishReason(json) || finishReason;
++    }
++
++    return { assistantText, finishReason, endMarkerFound, passTokenEstimate: estimateClaudeAutoContinueTokens(passText) };
++}
++
++/**
++ * Forwards one OpenAI-compatible streaming response while collecting text and finish metadata.
++ * @param {import('node-fetch').Response} fetchResponse Fetch response from an OpenAI-compatible backend
++ * @param {express.Response} response Express response
++ * @param {{endMarker: string, assistantText: string}} options Stream options
++ * @returns {Promise<{assistantText: string, finishReason: string, endMarkerFound: boolean, passTokenEstimate: number}>}
++ */
++async function forwardOpenAiAutoContinueStream(fetchResponse, response, options) {
++    if (!fetchResponse.ok) {
++        const rawErrorText = await fetchResponse.text();
++        const detail = rawErrorText || 'Unknown error occurred';
++        console.warn(`OpenAI-compatible auto-continue streaming request failed with status ${fetchResponse.status} ${fetchResponse.statusText}: ${detail}`);
++
++        if (!response.headersSent) {
++            response.statusCode = fetchResponse.status === 401 ? 400 : fetchResponse.status;
++            response.statusMessage = fetchResponse.statusText;
++        }
++
++        response.end(rawErrorText, 'utf-8');
++        return {
++            assistantText: options.assistantText,
++            finishReason: '',
++            endMarkerFound: false,
++            passTokenEstimate: 0,
++        };
++    }
++
++    if (!response.headersSent) {
++        response.statusCode = fetchResponse.status;
++        response.statusMessage = fetchResponse.statusText;
++        response.setHeader('Content-Type', fetchResponse.headers.get('content-type') || 'text/event-stream');
++        response.setHeader('Cache-Control', 'no-cache');
++        response.setHeader('Connection', 'keep-alive');
++        response.flushHeaders?.();
++    }
++
++    const decoder = new util.TextDecoder();
++    const writer = createOpenAiAutoContinueWriter(response);
++    let rawText = '';
++    let chunkCount = 0;
++    let rawCharacterCount = 0;
++
++    console.info('OpenAI-compatible auto-continue stream opened:', {
++        status: fetchResponse.status,
++        content_type: fetchResponse.headers.get('content-type'),
++    });
++
++    if (fetchResponse.body) {
++        for await (const chunk of fetchResponse.body) {
++            const text = decoder.decode(chunk, { stream: true });
++            chunkCount++;
++            rawCharacterCount += text.length;
++
++            if (chunkCount === 1) {
++                console.info('OpenAI-compatible auto-continue first chunk:', {
++                    length: text.length,
++                    preview: text.slice(0, 500).replaceAll('\r', '\\r').replaceAll('\n', '\\n'),
++                });
++            }
++
++            rawText += text;
++            writer.write(text);
++        }
++    }
++
++    const finalText = decoder.decode();
++    rawText += finalText;
++    writer.write(finalText);
++    writer.flush();
++
++    const result = collectOpenAiAutoContinueMetadata(rawText, options.assistantText, options.endMarker);
++    console.info('OpenAI-compatible auto-continue stream finished:', {
++        chunks: chunkCount,
++        raw_characters: rawCharacterCount + finalText.length,
++        assistant_characters: result.assistantText.length,
++        finish_reason: result.finishReason,
++        end_marker_found: result.endMarkerFound,
++        pass_token_estimate: result.passTokenEstimate,
++    });
++
++    return result;
++}
++
++/**
++ * Streams an OpenAI-compatible endpoint with automatic continuation.
++ * @param {import('node-fetch').Response} initialResponse Initial backend response
++ * @param {express.Response} response Express response
++ * @param {object} requestBody OpenAI-compatible request body
++ * @param {string} endpointUrl Chat completions endpoint URL
++ * @param {Record<string, string>} headers Request headers
++ * @param {AbortSignal} signal Abort signal
++ * @param {{enabled: boolean, endMarker: string, maxCalls: number, continuationPrompt: string, continueTrigger: string}} options Auto-continue options
++ * @returns {Promise<void>}
++ */
++async function streamOpenAiWithAutoContinue(initialResponse, response, requestBody, endpointUrl, headers, signal, options) {
++    let fetchResponse = initialResponse;
++    let assistantText = '';
++
++    for (let callIndex = 0; callIndex < options.maxCalls; callIndex++) {
++        const result = await forwardOpenAiAutoContinueStream(fetchResponse, response, {
++            endMarker: options.endMarker,
++            assistantText,
++        });
++
++        assistantText = result.assistantText;
++        const canContinue = callIndex < options.maxCalls - 1 && !signal.aborted && !response.destroyed && !response.writableEnded;
++        const stoppedByExplicitBoundary = ['tool_calls', 'content_filter'].includes(result.finishReason);
++        const triggerMatched = options.continueTrigger === CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER
++            ? !stoppedByExplicitBoundary
++            : isOpenAiTokenLimitStop(result, requestBody);
++        const shouldContinue = Array.isArray(requestBody.messages)
++            && !result.endMarkerFound
++            && canContinue
++            && triggerMatched;
++
++        console.info('OpenAI-compatible auto-continue decision:', {
++            call: callIndex + 1,
++            should_continue: shouldContinue,
++            can_continue: canContinue,
++            trigger_matched: triggerMatched,
++            finish_reason: result.finishReason,
++            end_marker_found: result.endMarkerFound,
++        });
++
++        if (!shouldContinue) {
++            if (!response.destroyed) {
++                writeOpenAiDone(response);
++                response.end();
++            }
++            return;
++        }
++
++        const continuationBody = structuredClone(requestBody);
++        continuationBody.messages = createOpenAiContinuationMessages(requestBody.messages, assistantText, options.continuationPrompt, options.endMarker);
++
++        writeClaudeAutoContinueStatus(response, callIndex + 2, options.maxCalls);
++        console.debug(`OpenAI-compatible auto-continue pass ${callIndex + 2}/${options.maxCalls}:`, continuationBody);
++
++        fetchResponse = await fetch(endpointUrl, {
++            method: 'POST',
++            signal,
++            body: JSON.stringify(continuationBody),
++            headers,
++        });
++    }
++
++    if (!response.destroyed) {
++        writeOpenAiDone(response);
++        response.end();
++    }
++}
++
++/**
++ * Forwards an OpenAI-compatible stream, optionally taking over to auto-continue it.
++ * @param {string} provider Provider label for logs
++ * @param {import('node-fetch').Response} fetchResponse Initial backend response
++ * @param {express.Response} response Express response
++ * @param {express.Request} request Express request
++ * @param {object} requestBody OpenAI-compatible request body
++ * @param {string} endpointUrl Chat completions endpoint URL
++ * @param {Record<string, string>} headers Request headers
++ * @param {AbortSignal} signal Abort signal
++ * @returns {Promise<void>}
++ */
++async function forwardOpenAiCompatibleStreamWithAutoContinue(provider, fetchResponse, response, request, requestBody, endpointUrl, headers, signal) {
++    console.info('Streaming request in progress');
++    const autoContinueOptions = getClaudeAutoContinueOptions(request);
++    logClaudeAutoContinueDecision(provider, requestBody, autoContinueOptions, Array.isArray(requestBody.messages));
++
++    if (autoContinueOptions.enabled && Array.isArray(requestBody.messages)) {
++        return await streamOpenAiWithAutoContinue(fetchResponse, response, requestBody, endpointUrl, headers, signal, autoContinueOptions);
++    }
++
++    return await forwardFetchResponse(fetchResponse, response);
++}
++
+ /**
+  * Checks if an OpenRouter model supports prompt cache writing.
+  * Uses a cache to avoid repeated API calls.
+@@ -386,8 +1190,15 @@ async function sendClaudeRequest(request, response) {
+         });
+ 
+         if (request.body.stream) {
+-            // Pipe remote SSE stream to Express response
+-            await forwardFetchResponse(generateResponse, response);
++            const autoContinueOptions = getClaudeAutoContinueOptions(request);
++            logClaudeAutoContinueDecision('claude', requestBody, autoContinueOptions, Array.isArray(requestBody.messages));
++
++            if (autoContinueOptions.enabled) {
++                await streamClaudeWithAutoContinue(generateResponse, response, requestBody, apiUrl, apiKey, additionalHeaders, controller.signal, autoContinueOptions);
++            } else {
++                // Pipe remote SSE stream to Express response
++                await forwardFetchResponse(generateResponse, response);
++            }
+         } else {
+             if (!generateResponse.ok) {
+                 const generateResponseText = await generateResponse.text();
+@@ -806,9 +1617,10 @@ async function sendAI21Request(request, response) {
+     console.debug('AI21 request:', body);
+ 
+     try {
+-        const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
++        const endpointUrl = API_AI21 + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, options);
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('ai21', generateResponse, response, request, body, endpointUrl, options.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -896,9 +1708,10 @@ async function sendMistralAIRequest(request, response) {
+ 
+         console.debug('MisralAI request:', requestBody);
+ 
+-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
++        const endpointUrl = apiUrl + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, config);
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('mistralai', generateResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -1107,10 +1920,11 @@ async function sendDeepSeekRequest(request, response) {
+ 
+         console.debug('DeepSeek request:', requestBody);
+ 
+-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
++        const endpointUrl = apiUrl + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('deepseek', generateResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -1213,10 +2027,11 @@ async function sendXaiRequest(request, response) {
+ 
+         console.debug('xAI request:', requestBody);
+ 
+-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
++        const endpointUrl = apiUrl + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('xai', generateResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -1318,10 +2133,11 @@ async function sendAimlapiRequest(request, response) {
+ 
+         console.debug('AI/ML API request:', requestBody);
+ 
+-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
++        const endpointUrl = apiUrl + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('aimlapi', generateResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -1430,10 +2246,11 @@ async function sendElectronHubRequest(request, response) {
+ 
+         console.debug('Electron Hub request:', requestBody);
+ 
+-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
++        const endpointUrl = apiUrl + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('electronhub', generateResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -1531,10 +2348,11 @@ async function sendChutesRequest(request, response) {
+ 
+         console.debug('Chutes request:', requestBody);
+ 
+-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
++        const endpointUrl = apiUrl + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('chutes', generateResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -1612,10 +2430,11 @@ async function sendMinimaxRequest(request, response) {
+ 
+         console.debug('MiniMax request:', requestBody);
+ 
+-        const generateResponse = await fetch(apiUrl + '/chat/completions', config);
++        const endpointUrl = apiUrl + '/chat/completions';
++        const generateResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            await forwardOpenAiCompatibleStreamWithAutoContinue('minimax', generateResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -1709,7 +2528,7 @@ async function sendAzureOpenAIRequest(request, response) {
+         const fetchResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            return await forwardFetchResponse(fetchResponse, response);
++            return await forwardOpenAiCompatibleStreamWithAutoContinue('azure-openai', fetchResponse, response, request, apiRequestBody, endpointUrl, config.headers, controller.signal);
+         }
+ 
+         if (fetchResponse.ok) {
+@@ -2590,8 +3409,7 @@ router.post('/generate', async function (request, response) {
+         const fetchResponse = await fetch(endpointUrl, config);
+ 
+         if (request.body.stream) {
+-            console.info('Streaming request in progress');
+-            return await forwardFetchResponse(fetchResponse, response);
++            return await forwardOpenAiCompatibleStreamWithAutoContinue('openai-compatible', fetchResponse, response, request, requestBody, endpointUrl, config.headers, controller.signal);
+         }
+ 
+         if (fetchResponse.ok) {

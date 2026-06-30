@@ -1,0 +1,44 @@
+<div class="claude_auto_continue_settings extension_container">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Claude Auto Continue</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <label class="checkbox_label" for="claude_auto_continue_enabled" title="Automatically call Claude again when the stream stops because max_tokens was reached.">
+                <input id="claude_auto_continue_enabled" type="checkbox" class="checkbox">
+                <span>Enable auto continue for Claude streaming</span>
+            </label>
+
+            <label class="checkbox_label" for="claude_auto_continue_show_popup" title="Show a popup when Claude Auto Continue starts another background API call.">
+                <input id="claude_auto_continue_show_popup" type="checkbox" class="checkbox">
+                <span>Show popup while continuing</span>
+            </label>
+
+            <label for="claude_auto_continue_end_marker">
+                End marker
+            </label>
+            <textarea id="claude_auto_continue_end_marker" class="text_pole textarea_compact" rows="2" placeholder="&lt;disclaimer&gt;&lt;/disclaimer&gt;"></textarea>
+
+            <label for="claude_auto_continue_trigger">
+                Continue trigger
+            </label>
+            <select id="claude_auto_continue_trigger" class="text_pole">
+                <option value="missing_marker">Missing end marker</option>
+                <option value="token_limit">Token limit / likely Kiro 8k cut</option>
+            </select>
+            <small>Missing end marker mode continues after any non-manual stream end until the marker appears or the call limit is reached. Token limit mode is the conservative fallback.</small>
+
+            <label for="claude_auto_continue_max_calls">
+                Max API calls per reply
+            </label>
+            <input id="claude_auto_continue_max_calls" class="text_pole widthUnset" type="number" min="1" max="20" step="1">
+
+            <label for="claude_auto_continue_prompt">
+                Continuation prompt
+            </label>
+            <textarea id="claude_auto_continue_prompt" class="text_pole textarea_compact" rows="4"></textarea>
+            <small>Use {{endMarker}} where the configured end marker should be inserted.</small>
+        </div>
+    </div>
+</div>
