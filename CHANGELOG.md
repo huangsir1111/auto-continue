@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.17
+
+- 修复部分 OpenAI-compatible API 把流式正文放在 `delta.content` 数组、`delta.text` 或文本块对象里时，后端仍在接收但酒馆前端看不到后续正文的问题。
+- 转发给 SillyTavern 前端前会把可识别文本统一规范成 `choices[].delta.content` 字符串，提升换 API 后的兼容性。
+
 ## 1.0.16
 
 - 修复模型在同一次流式输出里写出结尾词后仍继续吐正文的问题。

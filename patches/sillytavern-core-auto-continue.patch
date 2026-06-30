@@ -27,7 +27,7 @@ index 97b96658e..68538f76b 100644
                      const swipeIndex = parsed.choices[0].index - 1;
                      // FIXME: state.reasoning should be an array to support multi-swipe
 diff --git a/src/endpoints/backends/chat-completions.js b/src/endpoints/backends/chat-completions.js
-index 71e031c2c..338437e0d 100644
+index 71e031c2c..9ecfe7074 100644
 --- a/src/endpoints/backends/chat-completions.js
 +++ b/src/endpoints/backends/chat-completions.js
 @@ -1,4 +1,6 @@
@@ -67,7 +67,7 @@ index 71e031c2c..338437e0d 100644
  
  /**
   * Cache for cacheable (writing) OpenRouter model IDs.
-@@ -112,6 +130,984 @@ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', t
+@@ -112,6 +130,1063 @@ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', t
   */
  const openRouterCacheableModels = [];
  
@@ -609,6 +609,61 @@ index 71e031c2c..338437e0d 100644
 +}
 +
 +/**
++ * Extracts text from OpenAI-compatible content fields, including provider-specific block arrays.
++ * @param {any} content Content field or content block
++ * @returns {string}
++ */
++function getOpenAiContentText(content) {
++    if (typeof content === 'string') {
++        return content;
++    }
++
++    if (Array.isArray(content)) {
++        return content.map(getOpenAiContentText).join('');
++    }
++
++    if (!content || typeof content !== 'object') {
++        return '';
++    }
++
++    for (const value of [
++        content.text,
++        content.content,
++        content.value,
++        content.output_text,
++    ]) {
++        const text = getOpenAiContentText(value);
++        if (text) {
++            return text;
++        }
++    }
++
++    return '';
++}
++
++/**
++ * Extracts visible assistant text from one OpenAI-compatible choice.
++ * @param {object} choice Parsed streaming choice
++ * @returns {string}
++ */
++function getOpenAiChoiceText(choice) {
++    for (const value of [
++        choice?.delta?.content,
++        choice?.delta?.text,
++        choice?.message?.content,
++        choice?.content,
++        choice?.text,
++    ]) {
++        const text = getOpenAiContentText(value);
++        if (text) {
++            return text;
++        }
++    }
++
++    return '';
++}
++
++/**
 + * Extracts visible assistant text from an OpenAI-compatible streaming chunk.
 + * @param {object} json Parsed streaming chunk
 + * @returns {string}
@@ -619,8 +674,8 @@ index 71e031c2c..338437e0d 100644
 +    }
 +
 +    return json.choices
-+        .map(choice => choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '')
-+        .filter(text => typeof text === 'string')
++        .map(getOpenAiChoiceText)
++        .filter(text => text.length > 0)
 +        .join('');
 +}
 +
@@ -645,6 +700,30 @@ index 71e031c2c..338437e0d 100644
 + */
 +function hasOpenAiStreamChunkText(json) {
 +    return getOpenAiStreamChunkText(json).length > 0;
++}
++
++/**
++ * Normalizes provider-specific text fields into delta.content for SillyTavern's stream parser.
++ * @param {object} json Parsed streaming chunk
++ * @returns {object}
++ */
++function normalizeOpenAiChunkText(json) {
++    if (!Array.isArray(json?.choices)) {
++        return json;
++    }
++
++    const normalized = structuredClone(json);
++    for (const choice of normalized.choices) {
++        const text = getOpenAiChoiceText(choice);
++        if (!text) {
++            continue;
++        }
++
++        choice.delta ||= {};
++        choice.delta.content = text;
++    }
++
++    return normalized;
 +}
 +
 +/**
@@ -683,7 +762,7 @@ index 71e031c2c..338437e0d 100644
 + * @returns {object}
 + */
 +function limitOpenAiChunkText(json, allowedCharacters) {
-+    const sanitized = structuredClone(json);
++    const sanitized = normalizeOpenAiChunkText(json);
 +    let remaining = Math.max(0, allowedCharacters);
 +
 +    for (const choice of sanitized.choices || []) {
@@ -747,7 +826,7 @@ index 71e031c2c..338437e0d 100644
 +        }
 +
 +        const textDelta = getOpenAiStreamChunkText(json);
-+        let chunkToForward = json;
++        let chunkToForward = normalizeOpenAiChunkText(json);
 +
 +        if (textDelta) {
 +            const trimmedDelta = trimClaudeAutoContinueDeltaAtEndMarker(assistantText, textDelta, options.endMarker);
@@ -760,7 +839,7 @@ index 71e031c2c..338437e0d 100644
 +            }
 +
 +            if (trimmedDelta.text !== textDelta) {
-+                chunkToForward = limitOpenAiChunkText(json, trimmedDelta.text.length);
++                chunkToForward = limitOpenAiChunkText(chunkToForward, trimmedDelta.text.length);
 +            }
 +        }
 +
@@ -1052,7 +1131,7 @@ index 71e031c2c..338437e0d 100644
  /**
   * Checks if an OpenRouter model supports prompt cache writing.
   * Uses a cache to avoid repeated API calls.
-@@ -386,8 +1382,15 @@ async function sendClaudeRequest(request, response) {
+@@ -386,8 +1461,15 @@ async function sendClaudeRequest(request, response) {
          });
  
          if (request.body.stream) {
@@ -1070,7 +1149,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const generateResponseText = await generateResponse.text();
-@@ -806,9 +1809,10 @@ async function sendAI21Request(request, response) {
+@@ -806,9 +1888,10 @@ async function sendAI21Request(request, response) {
      console.debug('AI21 request:', body);
  
      try {
@@ -1083,7 +1162,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -896,9 +1900,10 @@ async function sendMistralAIRequest(request, response) {
+@@ -896,9 +1979,10 @@ async function sendMistralAIRequest(request, response) {
  
          console.debug('MisralAI request:', requestBody);
  
@@ -1096,7 +1175,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1107,10 +2112,11 @@ async function sendDeepSeekRequest(request, response) {
+@@ -1107,10 +2191,11 @@ async function sendDeepSeekRequest(request, response) {
  
          console.debug('DeepSeek request:', requestBody);
  
@@ -1110,7 +1189,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1213,10 +2219,11 @@ async function sendXaiRequest(request, response) {
+@@ -1213,10 +2298,11 @@ async function sendXaiRequest(request, response) {
  
          console.debug('xAI request:', requestBody);
  
@@ -1124,7 +1203,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1318,10 +2325,11 @@ async function sendAimlapiRequest(request, response) {
+@@ -1318,10 +2404,11 @@ async function sendAimlapiRequest(request, response) {
  
          console.debug('AI/ML API request:', requestBody);
  
@@ -1138,7 +1217,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1430,10 +2438,11 @@ async function sendElectronHubRequest(request, response) {
+@@ -1430,10 +2517,11 @@ async function sendElectronHubRequest(request, response) {
  
          console.debug('Electron Hub request:', requestBody);
  
@@ -1152,7 +1231,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1531,10 +2540,11 @@ async function sendChutesRequest(request, response) {
+@@ -1531,10 +2619,11 @@ async function sendChutesRequest(request, response) {
  
          console.debug('Chutes request:', requestBody);
  
@@ -1166,7 +1245,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1612,10 +2622,11 @@ async function sendMinimaxRequest(request, response) {
+@@ -1612,10 +2701,11 @@ async function sendMinimaxRequest(request, response) {
  
          console.debug('MiniMax request:', requestBody);
  
@@ -1180,7 +1259,7 @@ index 71e031c2c..338437e0d 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1709,7 +2720,7 @@ async function sendAzureOpenAIRequest(request, response) {
+@@ -1709,7 +2799,7 @@ async function sendAzureOpenAIRequest(request, response) {
          const fetchResponse = await fetch(endpointUrl, config);
  
          if (request.body.stream) {
@@ -1189,7 +1268,7 @@ index 71e031c2c..338437e0d 100644
          }
  
          if (fetchResponse.ok) {
-@@ -2590,8 +3601,7 @@ router.post('/generate', async function (request, response) {
+@@ -2590,8 +3680,7 @@ router.post('/generate', async function (request, response) {
          const fetchResponse = await fetch(endpointUrl, config);
  
          if (request.body.stream) {
