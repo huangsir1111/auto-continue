@@ -48,7 +48,7 @@ git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/si
 
 - `Enable auto continue for Claude streaming`：开启自动续写。
 - `Show popup while continuing`：后台继续调用 API 时弹出提示。
-- `End marker`：结尾词。只要回复里出现这个文本，就不再继续调用。默认是 `<disclaimer></disclaimer>`，你也可以改成 `正文结束`、`1 2 3 4 5` 等任意文本。
+- `End marker`：结尾词。只有回复末尾出现这个文本，才会停止后台续写。默认是 `<disclaimer></disclaimer>`，你也可以改成 `正文结束`、`1 2 3 4 5` 等任意文本。
 - `Continue trigger`：
   - `Missing end marker`：推荐模式。只要流式回复结束时没有结尾词，并且不是你手动停止，就继续调用。
   - `Token limit / likely Kiro 8k cut`：保守模式。只有明确像 token 上限截断时才继续。
@@ -57,15 +57,17 @@ git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/si
 
 ## 行为说明
 
-- 如果模型一次性输出到了结尾词，不管输出多少 token，都不会继续调用。
+- 如果模型一次性输出到了结尾词，并且结尾词位于最终输出末尾，不管输出多少 token，都不会继续调用。
 - 如果中途断流、回复结束时没有结尾词，并且你没有手动停止，就会继续调用。
 - 如果你自己点了停止，不会被当成截断。
-- 默认模式不靠估算 token 判断截断，而是看“回复结束时有没有结尾词”。
+- 默认模式不靠估算 token 判断截断，而是看“回复结束时末尾有没有结尾词”。
 - 只有选择 `Token limit / likely Kiro 8k cut` 时，才会使用 token 上限或疑似截断特征作为判断依据。
+
+建议把结尾词设置成不容易在提示词或正文中自然出现的完整标记，例如 `<正文彻底结束></正文彻底结束>`。像 `正文结束` 这类常见短语也可以用，但必须真的出现在最终输出末尾才会停止。
 
 ## 安装后看不到设置面板怎么办
 
-请先确认扩展已经更新到 `1.0.13` 或更高版本，然后刷新浏览器页面。
+请先确认扩展已经更新到 `1.0.14` 或更高版本，然后刷新浏览器页面。
 
 如果仍然不显示：
 
@@ -149,4 +151,4 @@ data/default-user/settings.json
 
 ## 当前版本
 
-`1.0.13`
+`1.0.14`

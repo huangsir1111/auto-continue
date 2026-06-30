@@ -164,7 +164,7 @@ index 71e031c2c..9f709a9f7 100644
 +}
 +
 +/**
-+ * Checks whether the generated text contains the configured end marker.
++ * Checks whether the generated text ends with the configured end marker.
 + * @param {string} text Generated assistant text
 + * @param {string} marker Configured end marker
 + * @returns {boolean}
@@ -174,7 +174,8 @@ index 71e031c2c..9f709a9f7 100644
 +        return false;
 +    }
 +
-+    if (text.includes(marker)) {
++    const trimmedText = String(text || '').trimEnd();
++    if (trimmedText.endsWith(marker)) {
 +        return true;
 +    }
 +
@@ -184,7 +185,7 @@ index 71e031c2c..9f709a9f7 100644
 +    }
 +
 +    const tagName = emptyTagMatch[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-+    return new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>`).test(text);
++    return new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>\\s*$`).test(trimmedText);
 +}
 +
 +/**
@@ -438,7 +439,7 @@ index 71e031c2c..9f709a9f7 100644
 +
 +        if (textDelta) {
 +            assistantText += textDelta;
-+            endMarkerFound ||= hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
++            endMarkerFound = hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
 +        }
 +
 +        if (json?.type === 'message_delta' && typeof json?.delta?.stop_reason === 'string') {
@@ -728,7 +729,7 @@ index 71e031c2c..9f709a9f7 100644
 +        if (textDelta) {
 +            assistantText += textDelta;
 +            passText += textDelta;
-+            endMarkerFound ||= hasClaudeAutoContinueEndMarker(assistantText, endMarker);
++            endMarkerFound = hasClaudeAutoContinueEndMarker(assistantText, endMarker);
 +        }
 +
 +        finishReason = getOpenAiStreamFinishReason(json) || finishReason;
