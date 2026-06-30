@@ -67,7 +67,7 @@ git apply "public/scripts/extensions/third-party/claude-auto-continue/patches/si
 
 ## 安装后看不到设置面板怎么办
 
-请先确认扩展已经更新到 `1.0.15` 或更高版本，然后刷新浏览器页面。
+请先确认扩展已经更新到 `1.0.16` 或更高版本，然后刷新浏览器页面。
 
 如果仍然不显示：
 
@@ -151,4 +151,4 @@ data/default-user/settings.json
 
 ## 当前版本
 
-`1.0.15`
+`1.0.16`

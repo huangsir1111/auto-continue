@@ -8,7 +8,7 @@ import {
 } from '../../../extensions.js';
 
 const MODULE_NAME = 'claude_auto_continue';
-const SETTINGS_VERSION = '1.0.15';
+const SETTINGS_VERSION = '1.0.16';
 
 const defaultSettings = {
     enabled: false,
