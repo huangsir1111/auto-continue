@@ -86,6 +86,50 @@ git apply "public\scripts\extensions\third-party\auto-continue\patches\sillytave
 git apply "public\scripts\extensions\third-party\claude-auto-continue\patches\sillytavern-core-auto-continue.patch"
 ```
 
+### 安卓 / Termux 手机端安装说明
+
+这里指的是“手机自己运行 SillyTavern 后端”的情况。如果你只是用手机浏览器访问电脑上的 SillyTavern，那么只需要电脑那边安装好，本插件就会生效。
+
+手机端也一样要做两件事：
+
+1. 先在 SillyTavern 前端的第三方扩展安装器里输入本仓库地址：
+
+```text
+https://github.com/huangsir1111/auto-continue
+```
+
+2. 然后在 Termux 里进入 SillyTavern 根目录并应用核心补丁。
+
+打开 Termux，先安装 git：
+
+```bash
+pkg install git
+```
+
+进入 SillyTavern 根目录：
+
+```bash
+cd ~/SillyTavern
+```
+
+先检查补丁能不能应用：
+
+```bash
+git apply --check public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch
+```
+
+如果上面没有报错，再正式应用补丁：
+
+```bash
+git apply public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch
+```
+
+最后重启手机上的 SillyTavern 后端。
+
+如果你的 SillyTavern 不在 `~/SillyTavern`，就把 `cd ~/SillyTavern` 换成你自己的酒馆根目录。如果你的扩展目录名字不是 `auto-continue`，就把命令里的 `auto-continue` 换成实际目录名。
+
+MT 管理器可以用来确认文件位置，但 `git apply --check` 和 `git apply` 这两条命令需要在 Termux 里执行。
+
 ## 设置说明
 
 - `Enable auto continue for Claude streaming`：开启自动续写。
