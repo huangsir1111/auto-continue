@@ -27,7 +27,7 @@ index 97b96658e..68538f76b 100644
                      const swipeIndex = parsed.choices[0].index - 1;
                      // FIXME: state.reasoning should be an array to support multi-swipe
 diff --git a/src/endpoints/backends/chat-completions.js b/src/endpoints/backends/chat-completions.js
-index 71e031c2c..9ecfe7074 100644
+index 71e031c2c..b5ec894c5 100644
 --- a/src/endpoints/backends/chat-completions.js
 +++ b/src/endpoints/backends/chat-completions.js
 @@ -1,4 +1,6 @@
@@ -67,7 +67,7 @@ index 71e031c2c..9ecfe7074 100644
  
  /**
   * Cache for cacheable (writing) OpenRouter model IDs.
-@@ -112,6 +130,1063 @@ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', t
+@@ -112,6 +130,1215 @@ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', t
   */
  const openRouterCacheableModels = [];
  
@@ -787,9 +787,135 @@ index 71e031c2c..9ecfe7074 100644
 +}
 +
 +/**
++ * Replaces visible text fields in an OpenAI-compatible chunk with a sanitized text delta.
++ * @param {object} json Parsed streaming chunk
++ * @param {string} replacementText Text to forward
++ * @returns {object}
++ */
++function replaceOpenAiChunkText(json, replacementText) {
++    const sanitized = normalizeOpenAiChunkText(json);
++    let replaced = false;
++
++    for (const choice of sanitized.choices || []) {
++        for (const container of [choice?.delta, choice?.message, choice]) {
++            if (!container || typeof container.content !== 'string') {
++                continue;
++            }
++
++            container.content = replaced ? '' : replacementText;
++            replaced = true;
++        }
++
++        if (typeof choice?.text === 'string') {
++            choice.text = replaced ? '' : replacementText;
++            replaced = true;
++        }
++    }
++
++    return sanitized;
++}
++
++/**
++ * Checks whether an opening thinking block is a leaked auto-continuation note.
++ * This intentionally looks for continuation-specific wording, not generic output-structure terms.
++ * @param {string} text Complete thinking block text
++ * @returns {boolean}
++ */
++function isLeakedOpenAiContinuationThinking(text) {
++    const source = String(text || '').replace(/\s+/g, ' ').trim();
++
++    if (!source) {
++        return false;
++    }
++
++    return [
++        /continue exactly from where/i,
++        /where (?:i|we|the model)?\s*stopped/i,
++        /do not repeat (?:any )?previous text/i,
++        /从[“"'][^”"']{1,200}[”"'](?:这里|这儿|此处|处)?继续/u,
++        /从.{1,120}(?:断点|截断处|上次截断|刚才截断|停止处).{0,80}继续/u,
++        /继续(?:上文|上一段|刚才的内容|未完成的内容|从断点|从截断处)/u,
++        /(?:自动续写|后台续写|续写调用)/u,
++    ].some(pattern => pattern.test(source));
++}
++
++/**
++ * Creates a small stream filter for thinking blocks leaked at the start of continuation passes.
++ * @param {boolean} enabled Whether filtering should run for this pass
++ * @returns {{filter: (text: string) => string, flush: () => string}}
++ */
++function createOpenAiContinuationThinkingFilter(enabled) {
++    const maxBufferedCharacters = 6000;
++    let active = Boolean(enabled);
++    let buffering = false;
++    let buffer = '';
++
++    return {
++        filter(text) {
++            if (!active || !text) {
++                return text;
++            }
++
++            const incoming = String(text);
++            const combined = buffer + incoming;
++
++            if (!buffering) {
++                const leadingMatch = combined.match(/^\s*/);
++                const leadingLength = leadingMatch ? leadingMatch[0].length : 0;
++
++                if (!combined.slice(leadingLength).toLowerCase().startsWith('<thinking>')) {
++                    active = false;
++                    buffer = '';
++                    return combined;
++                }
++
++                buffering = true;
++            }
++
++            buffer = combined;
++
++            const closingIndex = buffer.toLowerCase().indexOf('</thinking>');
++            if (closingIndex === -1) {
++                if (buffer.length > maxBufferedCharacters) {
++                    active = false;
++                    buffering = false;
++                    const released = buffer;
++                    buffer = '';
++                    return released;
++                }
++
++                return '';
++            }
++
++            const blockEnd = closingIndex + '</thinking>'.length;
++            const thinkingBlock = buffer.slice(0, blockEnd);
++            const remainder = buffer.slice(blockEnd);
++            const shouldHide = isLeakedOpenAiContinuationThinking(thinkingBlock);
++
++            active = false;
++            buffering = false;
++            buffer = '';
++
++            if (shouldHide) {
++                console.info('OpenAI-compatible auto-continue suppressed leaked opening thinking block');
++            }
++
++            return shouldHide ? remainder : thinkingBlock + remainder;
++        },
++        flush() {
++            const released = buffer;
++            active = false;
++            buffering = false;
++            buffer = '';
++            return released;
++        },
++    };
++}
++
++/**
 + * Creates a writer that forwards complete SSE events while suppressing upstream [DONE] markers.
 + * @param {express.Response} response Express response
-+ * @param {{endMarker: string, assistantText: string}} options Writer options
++ * @param {{endMarker: string, assistantText: string, suppressOpeningThinking?: boolean}} options Writer options
 + * @returns {{write: (text: string) => void, flush: () => void, getResult: () => {assistantText: string, finishReason: string, endMarkerFound: boolean, passTokenEstimate: number}}}
 + */
 +function createOpenAiAutoContinueWriter(response, options) {
@@ -799,6 +925,7 @@ index 71e031c2c..9ecfe7074 100644
 +    let passText = '';
 +    let finishReason = '';
 +    let endMarkerFound = hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
++    const thinkingFilter = createOpenAiContinuationThinkingFilter(options.suppressOpeningThinking);
 +
 +    const processBlock = (block) => {
 +        if (!block.trim()) {
@@ -829,7 +956,16 @@ index 71e031c2c..9ecfe7074 100644
 +        let chunkToForward = normalizeOpenAiChunkText(json);
 +
 +        if (textDelta) {
-+            const trimmedDelta = trimClaudeAutoContinueDeltaAtEndMarker(assistantText, textDelta, options.endMarker);
++            const filteredDelta = thinkingFilter.filter(textDelta);
++            if (!filteredDelta) {
++                return;
++            }
++
++            if (filteredDelta !== textDelta) {
++                chunkToForward = replaceOpenAiChunkText(chunkToForward, filteredDelta);
++            }
++
++            const trimmedDelta = trimClaudeAutoContinueDeltaAtEndMarker(assistantText, filteredDelta, options.endMarker);
 +            assistantText += trimmedDelta.text;
 +            passText += trimmedDelta.text;
 +            endMarkerFound = trimmedDelta.found || hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
@@ -882,6 +1018,7 @@ index 71e031c2c..9ecfe7074 100644
 +        flush() {
 +            if (response.destroyed || response.writableEnded) {
 +                buffer = '';
++                thinkingFilter.flush();
 +                return;
 +            }
 +
@@ -890,6 +1027,20 @@ index 71e031c2c..9ecfe7074 100644
 +            }
 +
 +            buffer = '';
++
++            const releasedText = thinkingFilter.flush();
++            if (releasedText) {
++                assistantText += releasedText;
++                passText += releasedText;
++                response.write(`data: ${JSON.stringify({
++                    choices: [{
++                        delta: { content: releasedText },
++                        finish_reason: null,
++                        index: 0,
++                    }],
++                })}\n\n`);
++                response.flush?.();
++            }
 +        },
 +        getResult() {
 +            return {
@@ -1054,6 +1205,7 @@ index 71e031c2c..9ecfe7074 100644
 +        const result = await forwardOpenAiAutoContinueStream(fetchResponse, response, {
 +            endMarker: options.endMarker,
 +            assistantText,
++            suppressOpeningThinking: callIndex > 0,
 +        });
 +
 +        assistantText = result.assistantText;
@@ -1131,7 +1283,7 @@ index 71e031c2c..9ecfe7074 100644
  /**
   * Checks if an OpenRouter model supports prompt cache writing.
   * Uses a cache to avoid repeated API calls.
-@@ -386,8 +1461,15 @@ async function sendClaudeRequest(request, response) {
+@@ -386,8 +1613,15 @@ async function sendClaudeRequest(request, response) {
          });
  
          if (request.body.stream) {
@@ -1149,7 +1301,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const generateResponseText = await generateResponse.text();
-@@ -806,9 +1888,10 @@ async function sendAI21Request(request, response) {
+@@ -806,9 +2040,10 @@ async function sendAI21Request(request, response) {
      console.debug('AI21 request:', body);
  
      try {
@@ -1162,7 +1314,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -896,9 +1979,10 @@ async function sendMistralAIRequest(request, response) {
+@@ -896,9 +2131,10 @@ async function sendMistralAIRequest(request, response) {
  
          console.debug('MisralAI request:', requestBody);
  
@@ -1175,7 +1327,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1107,10 +2191,11 @@ async function sendDeepSeekRequest(request, response) {
+@@ -1107,10 +2343,11 @@ async function sendDeepSeekRequest(request, response) {
  
          console.debug('DeepSeek request:', requestBody);
  
@@ -1189,7 +1341,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1213,10 +2298,11 @@ async function sendXaiRequest(request, response) {
+@@ -1213,10 +2450,11 @@ async function sendXaiRequest(request, response) {
  
          console.debug('xAI request:', requestBody);
  
@@ -1203,7 +1355,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1318,10 +2404,11 @@ async function sendAimlapiRequest(request, response) {
+@@ -1318,10 +2556,11 @@ async function sendAimlapiRequest(request, response) {
  
          console.debug('AI/ML API request:', requestBody);
  
@@ -1217,7 +1369,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1430,10 +2517,11 @@ async function sendElectronHubRequest(request, response) {
+@@ -1430,10 +2669,11 @@ async function sendElectronHubRequest(request, response) {
  
          console.debug('Electron Hub request:', requestBody);
  
@@ -1231,7 +1383,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1531,10 +2619,11 @@ async function sendChutesRequest(request, response) {
+@@ -1531,10 +2771,11 @@ async function sendChutesRequest(request, response) {
  
          console.debug('Chutes request:', requestBody);
  
@@ -1245,7 +1397,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1612,10 +2701,11 @@ async function sendMinimaxRequest(request, response) {
+@@ -1612,10 +2853,11 @@ async function sendMinimaxRequest(request, response) {
  
          console.debug('MiniMax request:', requestBody);
  
@@ -1259,7 +1411,7 @@ index 71e031c2c..9ecfe7074 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1709,7 +2799,7 @@ async function sendAzureOpenAIRequest(request, response) {
+@@ -1709,7 +2951,7 @@ async function sendAzureOpenAIRequest(request, response) {
          const fetchResponse = await fetch(endpointUrl, config);
  
          if (request.body.stream) {
@@ -1268,7 +1420,7 @@ index 71e031c2c..9ecfe7074 100644
          }
  
          if (fetchResponse.ok) {
-@@ -2590,8 +3680,7 @@ router.post('/generate', async function (request, response) {
+@@ -2590,8 +3832,7 @@ router.post('/generate', async function (request, response) {
          const fetchResponse = await fetch(endpointUrl, config);
  
          if (request.body.stream) {
