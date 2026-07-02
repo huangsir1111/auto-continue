@@ -50,7 +50,7 @@ index 71e031c2c..b5ec894c5 100644
  })();
  const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', true, 'boolean');
 +const CLAUDE_AUTO_CONTINUE_MODULE_NAME = 'claude_auto_continue';
-+const CLAUDE_AUTO_CONTINUE_DEFAULT_END_MARKER = '<disclaimer></disclaimer>';
++const CLAUDE_AUTO_CONTINUE_DEFAULT_END_MARKER = '[[[ST_AUTO_CONTINUE_END_9QK7V2]]]';
 +const CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_CALLS = 6;
 +const CLAUDE_AUTO_CONTINUE_MAX_CALLS_LIMIT = 20;
 +const CLAUDE_AUTO_CONTINUE_DEFAULT_PROMPT = 'Continue exactly from where you stopped. Do not repeat any previous text. Keep writing until you output the ending marker: {{endMarker}}';

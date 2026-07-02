@@ -6,6 +6,12 @@
 - 文档简化安装和卸载说明，保留 `Win + R` 打开 `cmd` 的步骤，去掉容易复制出错的复杂目录搜索命令。
 - 安装、撤销补丁和删除扩展的默认命令统一使用 `public/scripts/extensions/third-party/auto-continue` 目录。
 
+## 1.0.18
+
+- 新增可拖动的小圆形快速开关，亮起表示自动续写开启，变暗表示关闭。
+- 扩展设置里新增 `Show floating toggle`，可以控制是否显示小圆形开关。
+- 默认结尾词改为 `[[[ST_AUTO_CONTINUE_END_9QK7V2]]]`，降低和正文、思维链内容撞词的概率。
+
 ## 1.0.17
 
 - 修复部分 OpenAI-compatible API 把流式正文放在 `delta.content` 数组、`delta.text` 或文本块对象里时，后端仍在接收但酒馆前端看不到后续正文的问题。
