@@ -8,7 +8,7 @@ import {
 } from '../../../extensions.js';
 
 const MODULE_NAME = 'claude_auto_continue';
-const SETTINGS_VERSION = '1.0.18';
+const SETTINGS_VERSION = '1.0.19';
 const FLOATING_TOGGLE_ID = 'claude_auto_continue_floating_toggle';
 const FLOATING_TOGGLE_STYLE_ID = 'claude_auto_continue_floating_toggle_style';
 
@@ -217,6 +217,7 @@ function createFloatingToggle() {
     toggle.title = 'Claude Auto Continue';
 
     let dragState = null;
+    let lastTouchTime = 0;
 
     const getPointerPoint = (event) => {
         const source = event.touches?.[0] || event.changedTouches?.[0] || event;
@@ -232,7 +233,7 @@ function createFloatingToggle() {
         const dx = point.x - dragState.startX;
         const dy = point.y - dragState.startY;
 
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
             dragState.moved = true;
             toggle.classList.add('dragging');
         }
@@ -274,6 +275,12 @@ function createFloatingToggle() {
     };
 
     const onPointerStart = (event) => {
+        if (event.type === 'touchstart') {
+            lastTouchTime = Date.now();
+        } else if (event.type === 'mousedown' && Date.now() - lastTouchTime < 700) {
+            return;
+        }
+
         const point = getPointerPoint(event);
         const rect = toggle.getBoundingClientRect();
         dragState = {
