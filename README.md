@@ -58,33 +58,29 @@ dir
 
 如果你能看到 `public`、`data`、`src`、`package.json` 这些文件或文件夹，说明位置基本对了。
 
-### 第四步：检查核心补丁能不能应用
+### 第四步：覆盖安装 / 更新核心补丁
 
 ```cmd
-git apply --check "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
+node "public\scripts\extensions\third-party\auto-continue\update-core.cjs"
 ```
 
-如果没有报错，再执行下一步。
+这条命令适合第一次安装，也适合已经安装过旧版本后更新。
+
+它会自动做三件事：
+
+1. 备份当前的酒馆核心文件。
+2. 覆盖回 SillyTavern 原版核心文件。
+3. 应用本插件最新版核心补丁。
 
 如果你的扩展目录名字不是 `auto-continue`，请把命令里的路径改成你实际的扩展目录名。例如：
 
 ```cmd
-git apply --check "public\scripts\extensions\third-party\claude-auto-continue\patches\sillytavern-core-auto-continue.patch"
-```
-
-### 第五步：正式应用核心补丁
-
-```cmd
-git apply "public\scripts\extensions\third-party\auto-continue\patches\sillytavern-core-auto-continue.patch"
+node "public\scripts\extensions\third-party\claude-auto-continue\update-core.cjs"
 ```
 
 然后重启 SillyTavern 后端。
 
-如果你的扩展目录名字不是 `auto-continue`，同样把命令里的路径改成你实际的扩展目录名。例如：
-
-```cmd
-git apply "public\scripts\extensions\third-party\claude-auto-continue\patches\sillytavern-core-auto-continue.patch"
-```
+如果更新失败，脚本会尽量自动恢复更新前的核心文件，并告诉你备份位置。
 
 ### 安卓 / Termux 手机端安装说明
 
@@ -112,23 +108,25 @@ pkg install git
 cd ~/SillyTavern
 ```
 
-先检查补丁能不能应用：
+覆盖安装 / 更新核心补丁：
 
 ```bash
-git apply --check public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch
+node public/scripts/extensions/third-party/auto-continue/update-core.cjs
 ```
 
-如果上面没有报错，再正式应用补丁：
+这条命令适合第一次安装，也适合已经安装过旧版本后更新。
+
+如果你的扩展目录名字不是 `auto-continue`，就把命令里的 `auto-continue` 换成实际目录名。例如：
 
 ```bash
-git apply public/scripts/extensions/third-party/auto-continue/patches/sillytavern-core-auto-continue.patch
+node public/scripts/extensions/third-party/claude-auto-continue/update-core.cjs
 ```
 
 最后重启手机上的 SillyTavern 后端。
 
-如果你的 SillyTavern 不在 `~/SillyTavern`，就把 `cd ~/SillyTavern` 换成你自己的酒馆根目录。如果你的扩展目录名字不是 `auto-continue`，就把命令里的 `auto-continue` 换成实际目录名。
+如果你的 SillyTavern 不在 `~/SillyTavern`，就把 `cd ~/SillyTavern` 换成你自己的酒馆根目录。
 
-MT 管理器可以用来确认文件位置，但 `git apply --check` 和 `git apply` 这两条命令需要在 Termux 里执行。
+MT 管理器可以用来确认文件位置，但 `node ...update-core.cjs` 这条命令需要在 Termux 里执行。
 
 ## 设置说明
 
@@ -180,7 +178,7 @@ MT 管理器可以用来确认文件位置，但 `git apply --check` 和 `git ap
 
 ## 安装后看不到设置面板怎么办
 
-请先确认扩展已经更新到 `1.0.21` 或更高版本，然后刷新浏览器页面。
+请先确认扩展已经更新到 `1.0.22` 或更高版本，然后刷新浏览器页面。
 
 如果仍然不显示：
 
@@ -317,4 +315,4 @@ data/default-user/settings.json
 
 ## 当前版本
 
-`1.0.21`
+`1.0.22`

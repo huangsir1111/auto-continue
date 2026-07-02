@@ -2,9 +2,16 @@
 
 ## Unreleased
 
+- 暂无。
+
+## 1.0.22
+
+- 新增 `update-core.cjs` 覆盖更新脚本。
+- 第一次安装和旧版本更新现在都可以使用同一条 `node ...update-core.cjs` 命令。
+- 脚本会先备份核心文件，再覆盖回 SillyTavern 原版核心文件并应用最新版补丁；如果失败，会尽量恢复更新前文件。
+- README 更新为更简单的覆盖安装 / 更新说明，避免旧版用户直接 `git apply` 新补丁时出现 `patch does not apply`。
 - 文档补充前端第三方扩展和后端核心补丁的分别卸载方式。
 - 文档简化安装和卸载说明，保留 `Win + R` 打开 `cmd` 的步骤，去掉容易复制出错的复杂目录搜索命令。
-- 安装、撤销补丁和删除扩展的默认命令统一使用 `public/scripts/extensions/third-party/auto-continue` 目录。
 
 ## 1.0.21
 
