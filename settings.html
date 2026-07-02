@@ -1,49 +1,66 @@
 <div class="claude_auto_continue_settings extension_container">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Claude Auto Continue</b>
+            <b>Claude 自动续写</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <label class="checkbox_label" for="claude_auto_continue_enabled" title="Automatically call Claude again when the stream stops because max_tokens was reached.">
+            <label class="checkbox_label" for="claude_auto_continue_enabled" title="回复结束时没有检测到结尾词，就在后台继续调用。">
                 <input id="claude_auto_continue_enabled" type="checkbox" class="checkbox">
-                <span>Enable auto continue for Claude streaming</span>
+                <span>启用自动续写</span>
             </label>
 
-            <label class="checkbox_label" for="claude_auto_continue_show_popup" title="Show a popup when Claude Auto Continue starts another background API call.">
+            <label class="checkbox_label" for="claude_auto_continue_show_popup" title="后台开始下一次 API 调用时弹出提示。">
                 <input id="claude_auto_continue_show_popup" type="checkbox" class="checkbox">
-                <span>Show popup while continuing</span>
+                <span>后台续写时弹出提示</span>
             </label>
 
-            <label class="checkbox_label" for="claude_auto_continue_show_floating_toggle" title="Show a small draggable floating switch for Claude Auto Continue.">
+            <label class="checkbox_label" for="claude_auto_continue_show_floating_toggle" title="显示一个可拖动的小圆形快速开关。">
                 <input id="claude_auto_continue_show_floating_toggle" type="checkbox" class="checkbox">
-                <span>Show floating toggle</span>
+                <span>显示悬浮小圆点</span>
             </label>
 
             <label for="claude_auto_continue_end_marker">
-                End marker
+                结尾词
             </label>
             <textarea id="claude_auto_continue_end_marker" class="text_pole textarea_compact" rows="2" placeholder="[[[ST_AUTO_CONTINUE_END_9QK7V2]]]"></textarea>
 
             <label for="claude_auto_continue_trigger">
-                Continue trigger
+                续写触发方式
             </label>
             <select id="claude_auto_continue_trigger" class="text_pole">
-                <option value="missing_marker">Missing end marker</option>
-                <option value="token_limit">Token limit / likely Kiro 8k cut</option>
+                <option value="missing_marker">缺少结尾词</option>
+                <option value="token_limit">疑似 token 上限截断</option>
             </select>
-            <small>Missing end marker mode continues after any non-manual stream end until the marker appears or the call limit is reached. Token limit mode is the conservative fallback.</small>
+            <small>推荐使用“缺少结尾词”：只要不是你手动停止，回复结束时没有结尾词就继续调用，直到出现结尾词或达到调用上限。</small>
 
             <label for="claude_auto_continue_max_calls">
-                Max API calls per reply
+                单条回复最大调用次数
             </label>
             <input id="claude_auto_continue_max_calls" class="text_pole widthUnset" type="number" min="1" max="20" step="1">
 
+            <label class="checkbox_label" for="claude_auto_continue_retry_stuck_calls" title="后台续写请求长时间没有输出正文时，中断这次请求并重新调用。">
+                <input id="claude_auto_continue_retry_stuck_calls" type="checkbox" class="checkbox">
+                <span>后台续写卡住自动重试</span>
+            </label>
+
+            <label for="claude_auto_continue_no_text_timeout_seconds">
+                无正文超时秒数
+            </label>
+            <input id="claude_auto_continue_no_text_timeout_seconds" class="text_pole widthUnset" type="number" min="15" max="600" step="1">
+            <small>只对后台续写生效。范围 15-600 秒，默认推荐 120 秒。续写请求打开后，如果在这个时间内没有任何可见正文进入酒馆，就会自动中断并重试。</small>
+
+            <label for="claude_auto_continue_max_stuck_retries">
+                最大卡住重试次数
+            </label>
+            <input id="claude_auto_continue_max_stuck_retries" class="text_pole widthUnset" type="number" min="0" max="10" step="1">
+            <small>只限制“后台续写无正文超时”触发的重新调用。范围 0-10 次，默认推荐 2 次；填 0 等于不重试卡住调用。</small>
+
             <label for="claude_auto_continue_prompt">
-                Continuation prompt
+                续写提示词
             </label>
             <textarea id="claude_auto_continue_prompt" class="text_pole textarea_compact" rows="4"></textarea>
-            <small>Use {{endMarker}} where the configured end marker should be inserted.</small>
+            <small>可以用 {{endMarker}} 插入当前设置的结尾词。</small>
         </div>
     </div>
 </div>

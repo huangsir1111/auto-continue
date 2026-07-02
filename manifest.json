@@ -1,12 +1,12 @@
 {
-    "display_name": "Claude Auto Continue",
-    "description": "Claude/OpenAI-compatible replies can continue in the background until a configurable end marker appears.",
+    "display_name": "Claude 自动续写",
+    "description": "Claude / OpenAI-compatible 回复被截断时，可在后台自动续写直到出现指定结尾词。",
     "loading_order": 10,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "author": "Codex",
-    "version": "1.0.19",
+    "version": "1.0.21",
     "homepage": "https://github.com/huangsir1111/auto-continue",
     "hooks": {
         "activate": "init"

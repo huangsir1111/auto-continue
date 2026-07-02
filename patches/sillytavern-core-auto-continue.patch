@@ -27,7 +27,7 @@ index 97b96658e..68538f76b 100644
                      const swipeIndex = parsed.choices[0].index - 1;
                      // FIXME: state.reasoning should be an array to support multi-swipe
 diff --git a/src/endpoints/backends/chat-completions.js b/src/endpoints/backends/chat-completions.js
-index 71e031c2c..b5ec894c5 100644
+index 71e031c2c..c3b47d3ad 100644
 --- a/src/endpoints/backends/chat-completions.js
 +++ b/src/endpoints/backends/chat-completions.js
 @@ -1,4 +1,6 @@
@@ -45,7 +45,7 @@ index 71e031c2c..b5ec894c5 100644
      VERTEX_SAFETY,
      SILICONFLOW_ENDPOINT,
      MINIMAX_ENDPOINT,
-@@ -105,6 +108,21 @@ const cachingAtDepth = (() => {
+@@ -105,6 +108,28 @@ const cachingAtDepth = (() => {
      return Number.isInteger(value) && value >= 0 ? value : -1;
  })();
  const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', true, 'boolean');
@@ -53,6 +53,13 @@ index 71e031c2c..b5ec894c5 100644
 +const CLAUDE_AUTO_CONTINUE_DEFAULT_END_MARKER = '[[[ST_AUTO_CONTINUE_END_9QK7V2]]]';
 +const CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_CALLS = 6;
 +const CLAUDE_AUTO_CONTINUE_MAX_CALLS_LIMIT = 20;
++const CLAUDE_AUTO_CONTINUE_DEFAULT_RETRY_STUCK_CALLS = true;
++const CLAUDE_AUTO_CONTINUE_DEFAULT_NO_TEXT_TIMEOUT_SECONDS = 120;
++const CLAUDE_AUTO_CONTINUE_MIN_NO_TEXT_TIMEOUT_SECONDS = 15;
++const CLAUDE_AUTO_CONTINUE_MAX_NO_TEXT_TIMEOUT_SECONDS = 600;
++const CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_STUCK_RETRIES = 2;
++const CLAUDE_AUTO_CONTINUE_MIN_MAX_STUCK_RETRIES = 0;
++const CLAUDE_AUTO_CONTINUE_MAX_MAX_STUCK_RETRIES = 10;
 +const CLAUDE_AUTO_CONTINUE_DEFAULT_PROMPT = 'Continue exactly from where you stopped. Do not repeat any previous text. Keep writing until you output the ending marker: {{endMarker}}';
 +const CLAUDE_AUTO_CONTINUE_TRIGGER_TOKEN_LIMIT = 'token_limit';
 +const CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER = 'missing_marker';
@@ -67,7 +74,7 @@ index 71e031c2c..b5ec894c5 100644
  
  /**
   * Cache for cacheable (writing) OpenRouter model IDs.
-@@ -112,6 +130,1215 @@ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', t
+@@ -112,6 +137,1616 @@ const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', t
   */
  const openRouterCacheableModels = [];
  
@@ -109,9 +116,88 @@ index 71e031c2c..b5ec894c5 100644
 +}
 +
 +/**
++ * Clamps the first visible text timeout for stuck continuation calls.
++ * @param {any} value Raw timeout seconds
++ * @returns {number}
++ */
++function clampClaudeAutoContinueNoTextTimeoutSeconds(value) {
++    const numberValue = Number(value);
++
++    if (!Number.isFinite(numberValue)) {
++        return CLAUDE_AUTO_CONTINUE_DEFAULT_NO_TEXT_TIMEOUT_SECONDS;
++    }
++
++    return Math.min(
++        Math.max(Math.floor(numberValue), CLAUDE_AUTO_CONTINUE_MIN_NO_TEXT_TIMEOUT_SECONDS),
++        CLAUDE_AUTO_CONTINUE_MAX_NO_TEXT_TIMEOUT_SECONDS,
++    );
++}
++
++/**
++ * Clamps the maximum number of retries for stuck continuation calls.
++ * @param {any} value Raw retry count
++ * @returns {number}
++ */
++function clampClaudeAutoContinueMaxStuckRetries(value) {
++    const numberValue = Number(value);
++
++    if (!Number.isFinite(numberValue)) {
++        return CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_STUCK_RETRIES;
++    }
++
++    return Math.min(
++        Math.max(Math.floor(numberValue), CLAUDE_AUTO_CONTINUE_MIN_MAX_STUCK_RETRIES),
++        CLAUDE_AUTO_CONTINUE_MAX_MAX_STUCK_RETRIES,
++    );
++}
++
++/**
++ * Creates an error that marks a stuck continuation call with no visible assistant text.
++ * @param {number} timeoutSeconds Timeout in seconds
++ * @returns {Error}
++ */
++function createClaudeAutoContinueNoTextTimeoutError(timeoutSeconds) {
++    const error = new Error(`Claude auto-continue received no visible text for ${timeoutSeconds} seconds`);
++    error.name = 'ClaudeAutoContinueNoTextTimeoutError';
++    error.claudeAutoContinueNoTextTimeout = true;
++    return error;
++}
++
++/**
++ * Checks whether an error came from the no-visible-text timeout.
++ * @param {any} error Error-like object
++ * @returns {boolean}
++ */
++function isClaudeAutoContinueNoTextTimeoutError(error) {
++    return error?.claudeAutoContinueNoTextTimeout === true
++        || error?.name === 'ClaudeAutoContinueNoTextTimeoutError';
++}
++
++/**
++ * Creates an AbortController that follows the original client abort signal.
++ * @param {AbortSignal} parentSignal Original request abort signal
++ * @returns {{controller: AbortController, cleanup: () => void}}
++ */
++function createClaudeAutoContinueLinkedAbortController(parentSignal) {
++    const controller = new AbortController();
++    const abort = () => controller.abort(parentSignal?.reason);
++
++    if (parentSignal?.aborted) {
++        abort();
++    } else {
++        parentSignal?.addEventListener('abort', abort, { once: true });
++    }
++
++    return {
++        controller,
++        cleanup: () => parentSignal?.removeEventListener('abort', abort),
++    };
++}
++
++/**
 + * Gets Claude auto-continue options from the request body or saved user settings.
 + * @param {express.Request} request Express request
-+ * @returns {{enabled: boolean, endMarker: string, maxCalls: number, continuationPrompt: string, continueTrigger: string, source: string}}
++ * @returns {{enabled: boolean, endMarker: string, maxCalls: number, retryStuckCalls: boolean, noTextTimeoutSeconds: number, maxStuckRetries: number, continuationPrompt: string, continueTrigger: string, source: string}}
 + */
 +function getClaudeAutoContinueOptions(request) {
 +    const requestSettings = request.body.claude_auto_continue;
@@ -131,11 +217,29 @@ index 71e031c2c..b5ec894c5 100644
 +    const continueTrigger = CLAUDE_AUTO_CONTINUE_TRIGGERS.has(requestedTrigger)
 +        ? requestedTrigger
 +        : CLAUDE_AUTO_CONTINUE_DEFAULT_TRIGGER;
++    const retryStuckCalls = settings.retry_stuck_calls !== undefined
++        ? settings.retry_stuck_calls !== false
++        : request.body.claude_auto_continue_retry_stuck_calls !== undefined
++            ? request.body.claude_auto_continue_retry_stuck_calls !== false
++            : CLAUDE_AUTO_CONTINUE_DEFAULT_RETRY_STUCK_CALLS;
++    const noTextTimeoutSeconds = clampClaudeAutoContinueNoTextTimeoutSeconds(
++        settings.no_text_timeout_seconds
++        ?? request.body.claude_auto_continue_no_text_timeout_seconds
++        ?? CLAUDE_AUTO_CONTINUE_DEFAULT_NO_TEXT_TIMEOUT_SECONDS,
++    );
++    const maxStuckRetries = clampClaudeAutoContinueMaxStuckRetries(
++        settings.max_stuck_retries
++        ?? request.body.claude_auto_continue_max_stuck_retries
++        ?? CLAUDE_AUTO_CONTINUE_DEFAULT_MAX_STUCK_RETRIES,
++    );
 +
 +    return {
 +        enabled: enabled && endMarker.length > 0,
 +        endMarker,
 +        maxCalls,
++        retryStuckCalls,
++        noTextTimeoutSeconds,
++        maxStuckRetries,
 +        continuationPrompt,
 +        continueTrigger,
 +        source: hasRequestSettings ? 'request' : hasSavedSettings ? 'user-settings' : 'defaults',
@@ -146,7 +250,7 @@ index 71e031c2c..b5ec894c5 100644
 + * Logs the auto-continue decision without exposing prompts or secrets.
 + * @param {string} provider Provider label
 + * @param {object} requestBody Upstream request body
-+ * @param {{enabled: boolean, endMarker: string, maxCalls: number, continueTrigger: string, source: string}} options Auto-continue options
++ * @param {{enabled: boolean, endMarker: string, maxCalls: number, retryStuckCalls: boolean, noTextTimeoutSeconds: number, maxStuckRetries: number, continueTrigger: string, source: string}} options Auto-continue options
 + * @param {boolean} canUseMessages Whether the request has chat messages that can be continued
 + */
 +function logClaudeAutoContinueDecision(provider, requestBody, options, canUseMessages) {
@@ -157,6 +261,9 @@ index 71e031c2c..b5ec894c5 100644
 +        end_marker: options.endMarker,
 +        continue_trigger: options.continueTrigger,
 +        max_calls: options.maxCalls,
++        retry_stuck_calls: options.retryStuckCalls,
++        no_text_timeout_seconds: options.noTextTimeoutSeconds,
++        max_stuck_retries: options.maxStuckRetries,
 +        can_use_messages: canUseMessages,
 +        model: requestBody?.model,
 +        stream: requestBody?.stream,
@@ -425,7 +532,7 @@ index 71e031c2c..b5ec894c5 100644
 + * Forwards one Claude streaming response while collecting text and stop metadata.
 + * @param {import('node-fetch').Response} fetchResponse Fetch response from Claude
 + * @param {express.Response} response Express response
-+ * @param {{finalPass: boolean, endMarker: string, assistantText: string}} options Stream options
++ * @param {{finalPass: boolean, endMarker: string, assistantText: string, noTextTimeoutMs?: number, timeoutController?: AbortController}} options Stream options
 + * @returns {Promise<{assistantText: string, stopReason: string, endMarkerFound: boolean}>}
 + */
 +async function forwardClaudeAutoContinueStream(fetchResponse, response, options) {
@@ -460,6 +567,29 @@ index 71e031c2c..b5ec894c5 100644
 +    let assistantText = options.assistantText;
 +    let stopReason = '';
 +    let endMarkerFound = hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
++    let noTextTimedOut = false;
++    const initialAssistantLength = String(options.assistantText || '').length;
++    const noTextTimeoutMs = Math.max(0, Number(options.noTextTimeoutMs) || 0);
++    const timeoutSeconds = Math.ceil(noTextTimeoutMs / 1000);
++    let noTextTimeout = null;
++
++    const clearNoTextTimeout = () => {
++        if (noTextTimeout) {
++            clearTimeout(noTextTimeout);
++            noTextTimeout = null;
++        }
++    };
++
++    if (noTextTimeoutMs > 0 && options.timeoutController) {
++        noTextTimeout = setTimeout(() => {
++            noTextTimedOut = true;
++            console.warn('Claude auto-continue received no visible text before timeout:', {
++                timeout_seconds: timeoutSeconds,
++            });
++            options.timeoutController.abort(createClaudeAutoContinueNoTextTimeoutError(timeoutSeconds));
++        }, noTextTimeoutMs);
++        noTextTimeout.unref?.();
++    }
 +
 +    const processBlock = (block) => {
 +        if (!block.trim()) {
@@ -496,6 +626,9 @@ index 71e031c2c..b5ec894c5 100644
 +            const trimmedDelta = trimClaudeAutoContinueDeltaAtEndMarker(assistantText, textDelta, options.endMarker);
 +            assistantText += trimmedDelta.text;
 +            endMarkerFound = trimmedDelta.found || hasClaudeAutoContinueEndMarker(assistantText, options.endMarker);
++            if (assistantText.length > initialAssistantLength) {
++                clearNoTextTimeout();
++            }
 +
 +            if (!trimmedDelta.text) {
 +                return;
@@ -520,27 +653,36 @@ index 71e031c2c..b5ec894c5 100644
 +        }
 +    };
 +
-+    if (fetchResponse.body) {
-+        for await (const chunk of fetchResponse.body) {
-+            buffer += decoder.decode(chunk, { stream: true });
++    try {
++        if (fetchResponse.body) {
++            for await (const chunk of fetchResponse.body) {
++                buffer += decoder.decode(chunk, { stream: true });
 +
-+            while (true) {
-+                const separator = findSseSeparator(buffer);
-+                if (!separator) {
-+                    break;
++                while (true) {
++                    const separator = findSseSeparator(buffer);
++                    if (!separator) {
++                        break;
++                    }
++
++                    const block = buffer.slice(0, separator.index);
++                    buffer = buffer.slice(separator.index + separator.length);
++                    processBlock(block);
 +                }
-+
-+                const block = buffer.slice(0, separator.index);
-+                buffer = buffer.slice(separator.index + separator.length);
-+                processBlock(block);
 +            }
 +        }
++    } catch (error) {
++        clearNoTextTimeout();
++        if (noTextTimedOut || isClaudeAutoContinueNoTextTimeoutError(options.timeoutController?.signal?.reason)) {
++            throw createClaudeAutoContinueNoTextTimeoutError(timeoutSeconds);
++        }
++        throw error;
 +    }
 +
 +    buffer += decoder.decode();
 +    if (buffer.trim()) {
 +        processBlock(buffer);
 +    }
++    clearNoTextTimeout();
 +
 +    return { assistantText, stopReason, endMarkerFound };
 +}
@@ -560,21 +702,79 @@ index 71e031c2c..b5ec894c5 100644
 +async function streamClaudeWithAutoContinue(initialResponse, response, requestBody, apiUrl, apiKey, additionalHeaders, signal, options) {
 +    let fetchResponse = initialResponse;
 +    let assistantText = '';
++    let fetchTimeoutController = null;
++    let cleanupFetchSignal = null;
++    let pendingNoTextTimeout = false;
++    let stuckRetryCount = 0;
 +
 +    for (let callIndex = 0; callIndex < options.maxCalls; callIndex++) {
 +        const finalPass = callIndex === options.maxCalls - 1;
-+        const result = await forwardClaudeAutoContinueStream(fetchResponse, response, {
-+            finalPass,
-+            endMarker: options.endMarker,
-+            assistantText,
-+        });
++        let result;
++
++        if (pendingNoTextTimeout) {
++            pendingNoTextTimeout = false;
++            result = {
++                assistantText,
++                stopReason: 'stuck_timeout',
++                endMarkerFound: false,
++            };
++        } else {
++            try {
++                result = await forwardClaudeAutoContinueStream(fetchResponse, response, {
++                    finalPass,
++                    endMarker: options.endMarker,
++                    assistantText,
++                    noTextTimeoutMs: callIndex > 0 && options.retryStuckCalls ? options.noTextTimeoutSeconds * 1000 : 0,
++                    timeoutController: fetchTimeoutController,
++                });
++            } catch (error) {
++                cleanupFetchSignal?.();
++                cleanupFetchSignal = null;
++                fetchTimeoutController = null;
++
++                if (!isClaudeAutoContinueNoTextTimeoutError(error) || callIndex === 0 || !options.retryStuckCalls) {
++                    throw error;
++                }
++
++                if (stuckRetryCount >= options.maxStuckRetries) {
++                    console.warn('Claude auto-continue pass produced no visible text before timeout; retry limit reached:', {
++                        call: callIndex + 1,
++                        timeout_seconds: options.noTextTimeoutSeconds,
++                        stuck_retries: stuckRetryCount,
++                        max_stuck_retries: options.maxStuckRetries,
++                    });
++                    if (!response.destroyed) {
++                        response.end();
++                    }
++                    return;
++                }
++
++                stuckRetryCount++;
++
++                console.warn('Claude auto-continue pass produced no visible text before timeout; scheduling retry:', {
++                    call: callIndex + 1,
++                    timeout_seconds: options.noTextTimeoutSeconds,
++                    stuck_retries: stuckRetryCount,
++                    max_stuck_retries: options.maxStuckRetries,
++                });
++                result = {
++                    assistantText,
++                    stopReason: 'stuck_timeout',
++                    endMarkerFound: false,
++                };
++            }
++        }
++
++        cleanupFetchSignal?.();
++        cleanupFetchSignal = null;
++        fetchTimeoutController = null;
 +
 +        assistantText = result.assistantText;
 +        const canContinue = callIndex < options.maxCalls - 1 && !signal.aborted && !response.destroyed && !response.writableEnded;
 +        const stoppedByExplicitBoundary = ['stop_sequence', 'tool_use'].includes(result.stopReason);
 +        const triggerMatched = options.continueTrigger === CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER
 +            ? !stoppedByExplicitBoundary
-+            : result.stopReason === 'max_tokens';
++            : result.stopReason === 'max_tokens' || result.stopReason === 'stuck_timeout';
 +        const shouldContinue = !result.endMarkerFound && canContinue && triggerMatched;
 +
 +        if (!shouldContinue) {
@@ -590,17 +790,68 @@ index 71e031c2c..b5ec894c5 100644
 +        writeClaudeAutoContinueStatus(response, callIndex + 2, options.maxCalls);
 +        console.debug(`Claude auto-continue pass ${callIndex + 2}/${options.maxCalls}:`, continuationBody);
 +
-+        fetchResponse = await fetch(apiUrl + '/messages', {
-+            method: 'POST',
-+            signal,
-+            body: JSON.stringify(continuationBody),
-+            headers: {
-+                'Content-Type': 'application/json',
-+                'anthropic-version': '2023-06-01',
-+                'x-api-key': apiKey,
-+                ...additionalHeaders,
-+            },
-+        });
++        const linkedAbort = createClaudeAutoContinueLinkedAbortController(signal);
++        fetchTimeoutController = linkedAbort.controller;
++        cleanupFetchSignal = linkedAbort.cleanup;
++
++        let preStreamTimeout = null;
++        if (options.retryStuckCalls) {
++            preStreamTimeout = setTimeout(() => {
++                fetchTimeoutController.abort(createClaudeAutoContinueNoTextTimeoutError(options.noTextTimeoutSeconds));
++            }, options.noTextTimeoutSeconds * 1000);
++            preStreamTimeout.unref?.();
++        }
++
++        try {
++            fetchResponse = await fetch(apiUrl + '/messages', {
++                method: 'POST',
++                signal: fetchTimeoutController.signal,
++                body: JSON.stringify(continuationBody),
++                headers: {
++                    'Content-Type': 'application/json',
++                    'anthropic-version': '2023-06-01',
++                    'x-api-key': apiKey,
++                    ...additionalHeaders,
++                },
++            });
++        } catch (error) {
++            if (!isClaudeAutoContinueNoTextTimeoutError(fetchTimeoutController.signal.reason) || !options.retryStuckCalls) {
++                cleanupFetchSignal?.();
++                cleanupFetchSignal = null;
++                fetchTimeoutController = null;
++                throw error;
++            }
++
++            if (stuckRetryCount >= options.maxStuckRetries) {
++                cleanupFetchSignal?.();
++                cleanupFetchSignal = null;
++                fetchTimeoutController = null;
++                console.warn('Claude auto-continue request opened no stream before timeout; retry limit reached:', {
++                    call: callIndex + 2,
++                    timeout_seconds: options.noTextTimeoutSeconds,
++                    stuck_retries: stuckRetryCount,
++                    max_stuck_retries: options.maxStuckRetries,
++                });
++                if (!response.destroyed) {
++                    response.end();
++                }
++                return;
++            }
++
++            stuckRetryCount++;
++
++            console.warn('Claude auto-continue request opened no stream before timeout; scheduling retry:', {
++                call: callIndex + 2,
++                timeout_seconds: options.noTextTimeoutSeconds,
++                stuck_retries: stuckRetryCount,
++                max_stuck_retries: options.maxStuckRetries,
++            });
++            pendingNoTextTimeout = true;
++        } finally {
++            if (preStreamTimeout) {
++                clearTimeout(preStreamTimeout);
++            }
++        }
 +    }
 +
 +    if (!response.destroyed) {
@@ -916,7 +1167,7 @@ index 71e031c2c..b5ec894c5 100644
 + * Creates a writer that forwards complete SSE events while suppressing upstream [DONE] markers.
 + * @param {express.Response} response Express response
 + * @param {{endMarker: string, assistantText: string, suppressOpeningThinking?: boolean}} options Writer options
-+ * @returns {{write: (text: string) => void, flush: () => void, getResult: () => {assistantText: string, finishReason: string, endMarkerFound: boolean, passTokenEstimate: number}}}
++ * @returns {{write: (text: string) => void, flush: () => void, getAssistantTextLength: () => number, getResult: () => {assistantText: string, finishReason: string, endMarkerFound: boolean, passTokenEstimate: number}}}
 + */
 +function createOpenAiAutoContinueWriter(response, options) {
 +    let buffer = '';
@@ -1042,6 +1293,9 @@ index 71e031c2c..b5ec894c5 100644
 +                response.flush?.();
 +            }
 +        },
++        getAssistantTextLength() {
++            return assistantText.length;
++        },
 +        getResult() {
 +            return {
 +                assistantText,
@@ -1110,7 +1364,7 @@ index 71e031c2c..b5ec894c5 100644
 + * Forwards one OpenAI-compatible streaming response while collecting text and finish metadata.
 + * @param {import('node-fetch').Response} fetchResponse Fetch response from an OpenAI-compatible backend
 + * @param {express.Response} response Express response
-+ * @param {{endMarker: string, assistantText: string}} options Stream options
++ * @param {{endMarker: string, assistantText: string, suppressOpeningThinking?: boolean, noTextTimeoutMs?: number, timeoutController?: AbortController}} options Stream options
 + * @returns {Promise<{assistantText: string, finishReason: string, endMarkerFound: boolean, passTokenEstimate: number}>}
 + */
 +async function forwardOpenAiAutoContinueStream(fetchResponse, response, options) {
@@ -1146,32 +1400,73 @@ index 71e031c2c..b5ec894c5 100644
 +    const writer = createOpenAiAutoContinueWriter(response, options);
 +    let chunkCount = 0;
 +    let rawCharacterCount = 0;
++    let noTextTimedOut = false;
++    const initialAssistantLength = String(options.assistantText || '').length;
++    const noTextTimeoutMs = Math.max(0, Number(options.noTextTimeoutMs) || 0);
++    const timeoutSeconds = Math.ceil(noTextTimeoutMs / 1000);
++    let noTextTimeout = null;
++
++    const clearNoTextTimeout = () => {
++        if (noTextTimeout) {
++            clearTimeout(noTextTimeout);
++            noTextTimeout = null;
++        }
++    };
++
++    if (noTextTimeoutMs > 0 && options.timeoutController) {
++        noTextTimeout = setTimeout(() => {
++            noTextTimedOut = true;
++            console.warn('OpenAI-compatible auto-continue received no visible text before timeout:', {
++                timeout_seconds: timeoutSeconds,
++            });
++            options.timeoutController.abort(createClaudeAutoContinueNoTextTimeoutError(timeoutSeconds));
++        }, noTextTimeoutMs);
++        noTextTimeout.unref?.();
++    }
 +
 +    console.info('OpenAI-compatible auto-continue stream opened:', {
 +        status: fetchResponse.status,
 +        content_type: fetchResponse.headers.get('content-type'),
 +    });
 +
-+    if (fetchResponse.body) {
-+        for await (const chunk of fetchResponse.body) {
-+            const text = decoder.decode(chunk, { stream: true });
-+            chunkCount++;
-+            rawCharacterCount += text.length;
++    try {
++        if (fetchResponse.body) {
++            for await (const chunk of fetchResponse.body) {
++                const text = decoder.decode(chunk, { stream: true });
++                const assistantLengthBeforeWrite = writer.getAssistantTextLength();
++                chunkCount++;
++                rawCharacterCount += text.length;
 +
-+            if (chunkCount === 1) {
-+                console.info('OpenAI-compatible auto-continue first chunk:', {
-+                    length: text.length,
-+                    preview: text.slice(0, 500).replaceAll('\r', '\\r').replaceAll('\n', '\\n'),
-+                });
++                if (chunkCount === 1) {
++                    console.info('OpenAI-compatible auto-continue first chunk:', {
++                        length: text.length,
++                        preview: text.slice(0, 500).replaceAll('\r', '\\r').replaceAll('\n', '\\n'),
++                    });
++                }
++
++                writer.write(text);
++
++                if (writer.getAssistantTextLength() > Math.max(initialAssistantLength, assistantLengthBeforeWrite)) {
++                    clearNoTextTimeout();
++                }
 +            }
-+
-+            writer.write(text);
 +        }
++    } catch (error) {
++        clearNoTextTimeout();
++        if (noTextTimedOut || isClaudeAutoContinueNoTextTimeoutError(options.timeoutController?.signal?.reason)) {
++            throw createClaudeAutoContinueNoTextTimeoutError(timeoutSeconds);
++        }
++        throw error;
 +    }
 +
 +    const finalText = decoder.decode();
++    const assistantLengthBeforeFinalText = writer.getAssistantTextLength();
 +    writer.write(finalText);
++    if (writer.getAssistantTextLength() > Math.max(initialAssistantLength, assistantLengthBeforeFinalText)) {
++        clearNoTextTimeout();
++    }
 +    writer.flush();
++    clearNoTextTimeout();
 +
 +    const result = writer.getResult();
 +    console.info('OpenAI-compatible auto-continue stream finished:', {
@@ -1200,20 +1495,81 @@ index 71e031c2c..b5ec894c5 100644
 +async function streamOpenAiWithAutoContinue(initialResponse, response, requestBody, endpointUrl, headers, signal, options) {
 +    let fetchResponse = initialResponse;
 +    let assistantText = '';
++    let fetchTimeoutController = null;
++    let cleanupFetchSignal = null;
++    let pendingNoTextTimeout = false;
++    let stuckRetryCount = 0;
 +
 +    for (let callIndex = 0; callIndex < options.maxCalls; callIndex++) {
-+        const result = await forwardOpenAiAutoContinueStream(fetchResponse, response, {
-+            endMarker: options.endMarker,
-+            assistantText,
-+            suppressOpeningThinking: callIndex > 0,
-+        });
++        let result;
++
++        if (pendingNoTextTimeout) {
++            pendingNoTextTimeout = false;
++            result = {
++                assistantText,
++                finishReason: 'stuck_timeout',
++                endMarkerFound: false,
++                passTokenEstimate: 0,
++            };
++        } else {
++            try {
++                result = await forwardOpenAiAutoContinueStream(fetchResponse, response, {
++                    endMarker: options.endMarker,
++                    assistantText,
++                    suppressOpeningThinking: callIndex > 0,
++                    noTextTimeoutMs: callIndex > 0 && options.retryStuckCalls ? options.noTextTimeoutSeconds * 1000 : 0,
++                    timeoutController: fetchTimeoutController,
++                });
++            } catch (error) {
++                cleanupFetchSignal?.();
++                cleanupFetchSignal = null;
++                fetchTimeoutController = null;
++
++                if (!isClaudeAutoContinueNoTextTimeoutError(error) || callIndex === 0 || !options.retryStuckCalls) {
++                    throw error;
++                }
++
++                if (stuckRetryCount >= options.maxStuckRetries) {
++                    console.warn('OpenAI-compatible auto-continue pass produced no visible text before timeout; retry limit reached:', {
++                        call: callIndex + 1,
++                        timeout_seconds: options.noTextTimeoutSeconds,
++                        stuck_retries: stuckRetryCount,
++                        max_stuck_retries: options.maxStuckRetries,
++                    });
++                    if (!response.destroyed) {
++                        writeOpenAiDone(response);
++                        response.end();
++                    }
++                    return;
++                }
++
++                stuckRetryCount++;
++
++                console.warn('OpenAI-compatible auto-continue pass produced no visible text before timeout; scheduling retry:', {
++                    call: callIndex + 1,
++                    timeout_seconds: options.noTextTimeoutSeconds,
++                    stuck_retries: stuckRetryCount,
++                    max_stuck_retries: options.maxStuckRetries,
++                });
++                result = {
++                    assistantText,
++                    finishReason: 'stuck_timeout',
++                    endMarkerFound: false,
++                    passTokenEstimate: 0,
++                };
++            }
++        }
++
++        cleanupFetchSignal?.();
++        cleanupFetchSignal = null;
++        fetchTimeoutController = null;
 +
 +        assistantText = result.assistantText;
 +        const canContinue = callIndex < options.maxCalls - 1 && !signal.aborted && !response.destroyed && !response.writableEnded;
 +        const stoppedByExplicitBoundary = ['tool_calls', 'content_filter'].includes(result.finishReason);
 +        const triggerMatched = options.continueTrigger === CLAUDE_AUTO_CONTINUE_TRIGGER_MISSING_MARKER
 +            ? !stoppedByExplicitBoundary
-+            : isOpenAiTokenLimitStop(result, requestBody);
++            : isOpenAiTokenLimitStop(result, requestBody) || result.finishReason === 'stuck_timeout';
 +        const shouldContinue = Array.isArray(requestBody.messages)
 +            && !result.endMarkerFound
 +            && canContinue
@@ -1242,12 +1598,64 @@ index 71e031c2c..b5ec894c5 100644
 +        writeClaudeAutoContinueStatus(response, callIndex + 2, options.maxCalls);
 +        console.debug(`OpenAI-compatible auto-continue pass ${callIndex + 2}/${options.maxCalls}:`, continuationBody);
 +
-+        fetchResponse = await fetch(endpointUrl, {
-+            method: 'POST',
-+            signal,
-+            body: JSON.stringify(continuationBody),
-+            headers,
-+        });
++        const linkedAbort = createClaudeAutoContinueLinkedAbortController(signal);
++        fetchTimeoutController = linkedAbort.controller;
++        cleanupFetchSignal = linkedAbort.cleanup;
++
++        let preStreamTimeout = null;
++        if (options.retryStuckCalls) {
++            preStreamTimeout = setTimeout(() => {
++                fetchTimeoutController.abort(createClaudeAutoContinueNoTextTimeoutError(options.noTextTimeoutSeconds));
++            }, options.noTextTimeoutSeconds * 1000);
++            preStreamTimeout.unref?.();
++        }
++
++        try {
++            fetchResponse = await fetch(endpointUrl, {
++                method: 'POST',
++                signal: fetchTimeoutController.signal,
++                body: JSON.stringify(continuationBody),
++                headers,
++            });
++        } catch (error) {
++            if (!isClaudeAutoContinueNoTextTimeoutError(fetchTimeoutController.signal.reason) || !options.retryStuckCalls) {
++                cleanupFetchSignal?.();
++                cleanupFetchSignal = null;
++                fetchTimeoutController = null;
++                throw error;
++            }
++
++            if (stuckRetryCount >= options.maxStuckRetries) {
++                cleanupFetchSignal?.();
++                cleanupFetchSignal = null;
++                fetchTimeoutController = null;
++                console.warn('OpenAI-compatible auto-continue request opened no stream before timeout; retry limit reached:', {
++                    call: callIndex + 2,
++                    timeout_seconds: options.noTextTimeoutSeconds,
++                    stuck_retries: stuckRetryCount,
++                    max_stuck_retries: options.maxStuckRetries,
++                });
++                if (!response.destroyed) {
++                    writeOpenAiDone(response);
++                    response.end();
++                }
++                return;
++            }
++
++            stuckRetryCount++;
++
++            console.warn('OpenAI-compatible auto-continue request opened no stream before timeout; scheduling retry:', {
++                call: callIndex + 2,
++                timeout_seconds: options.noTextTimeoutSeconds,
++                stuck_retries: stuckRetryCount,
++                max_stuck_retries: options.maxStuckRetries,
++            });
++            pendingNoTextTimeout = true;
++        } finally {
++            if (preStreamTimeout) {
++                clearTimeout(preStreamTimeout);
++            }
++        }
 +    }
 +
 +    if (!response.destroyed) {
@@ -1283,7 +1691,7 @@ index 71e031c2c..b5ec894c5 100644
  /**
   * Checks if an OpenRouter model supports prompt cache writing.
   * Uses a cache to avoid repeated API calls.
-@@ -386,8 +1613,15 @@ async function sendClaudeRequest(request, response) {
+@@ -386,8 +2021,15 @@ async function sendClaudeRequest(request, response) {
          });
  
          if (request.body.stream) {
@@ -1301,7 +1709,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const generateResponseText = await generateResponse.text();
-@@ -806,9 +2040,10 @@ async function sendAI21Request(request, response) {
+@@ -806,9 +2448,10 @@ async function sendAI21Request(request, response) {
      console.debug('AI21 request:', body);
  
      try {
@@ -1314,7 +1722,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -896,9 +2131,10 @@ async function sendMistralAIRequest(request, response) {
+@@ -896,9 +2539,10 @@ async function sendMistralAIRequest(request, response) {
  
          console.debug('MisralAI request:', requestBody);
  
@@ -1327,7 +1735,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1107,10 +2343,11 @@ async function sendDeepSeekRequest(request, response) {
+@@ -1107,10 +2751,11 @@ async function sendDeepSeekRequest(request, response) {
  
          console.debug('DeepSeek request:', requestBody);
  
@@ -1341,7 +1749,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1213,10 +2450,11 @@ async function sendXaiRequest(request, response) {
+@@ -1213,10 +2858,11 @@ async function sendXaiRequest(request, response) {
  
          console.debug('xAI request:', requestBody);
  
@@ -1355,7 +1763,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1318,10 +2556,11 @@ async function sendAimlapiRequest(request, response) {
+@@ -1318,10 +2964,11 @@ async function sendAimlapiRequest(request, response) {
  
          console.debug('AI/ML API request:', requestBody);
  
@@ -1369,7 +1777,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1430,10 +2669,11 @@ async function sendElectronHubRequest(request, response) {
+@@ -1430,10 +3077,11 @@ async function sendElectronHubRequest(request, response) {
  
          console.debug('Electron Hub request:', requestBody);
  
@@ -1383,7 +1791,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1531,10 +2771,11 @@ async function sendChutesRequest(request, response) {
+@@ -1531,10 +3179,11 @@ async function sendChutesRequest(request, response) {
  
          console.debug('Chutes request:', requestBody);
  
@@ -1397,7 +1805,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1612,10 +2853,11 @@ async function sendMinimaxRequest(request, response) {
+@@ -1612,10 +3261,11 @@ async function sendMinimaxRequest(request, response) {
  
          console.debug('MiniMax request:', requestBody);
  
@@ -1411,7 +1819,7 @@ index 71e031c2c..b5ec894c5 100644
          } else {
              if (!generateResponse.ok) {
                  const errorText = await generateResponse.text();
-@@ -1709,7 +2951,7 @@ async function sendAzureOpenAIRequest(request, response) {
+@@ -1709,7 +3359,7 @@ async function sendAzureOpenAIRequest(request, response) {
          const fetchResponse = await fetch(endpointUrl, config);
  
          if (request.body.stream) {
@@ -1420,7 +1828,7 @@ index 71e031c2c..b5ec894c5 100644
          }
  
          if (fetchResponse.ok) {
-@@ -2590,8 +3832,7 @@ router.post('/generate', async function (request, response) {
+@@ -2590,8 +4240,7 @@ router.post('/generate', async function (request, response) {
          const fetchResponse = await fetch(endpointUrl, config);
  
          if (request.body.stream) {

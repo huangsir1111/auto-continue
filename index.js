@@ -8,7 +8,7 @@ import {
 } from '../../../extensions.js';
 
 const MODULE_NAME = 'claude_auto_continue';
-const SETTINGS_VERSION = '1.0.19';
+const SETTINGS_VERSION = '1.0.21';
 const FLOATING_TOGGLE_ID = 'claude_auto_continue_floating_toggle';
 const FLOATING_TOGGLE_STYLE_ID = 'claude_auto_continue_floating_toggle_style';
 
@@ -20,6 +20,9 @@ const defaultSettings = {
     end_marker: '[[[ST_AUTO_CONTINUE_END_9QK7V2]]]',
     continue_trigger: 'missing_marker',
     max_calls: 6,
+    retry_stuck_calls: true,
+    no_text_timeout_seconds: 120,
+    max_stuck_retries: 2,
     continuation_prompt: 'Continue exactly from where you stopped. Do not repeat any previous text. Keep writing until you output the ending marker: {{endMarker}}',
 };
 
@@ -77,6 +80,26 @@ function clampMaxCalls(value) {
     return Math.min(Math.max(Math.floor(numberValue), 1), 20);
 }
 
+function clampNoTextTimeoutSeconds(value) {
+    const numberValue = Number(value);
+
+    if (!Number.isFinite(numberValue)) {
+        return defaultSettings.no_text_timeout_seconds;
+    }
+
+    return Math.min(Math.max(Math.floor(numberValue), 15), 600);
+}
+
+function clampMaxStuckRetries(value) {
+    const numberValue = Number(value);
+
+    if (!Number.isFinite(numberValue)) {
+        return defaultSettings.max_stuck_retries;
+    }
+
+    return Math.min(Math.max(Math.floor(numberValue), 0), 10);
+}
+
 function shouldAttachAutoContinue(generateData) {
     if (!generateData) {
         return false;
@@ -94,6 +117,9 @@ function loadSettingsToUi() {
     $('#claude_auto_continue_end_marker').val(settings.end_marker);
     $('#claude_auto_continue_trigger').val(continueTriggers.has(settings.continue_trigger) ? settings.continue_trigger : defaultSettings.continue_trigger);
     $('#claude_auto_continue_max_calls').val(settings.max_calls);
+    $('#claude_auto_continue_retry_stuck_calls').prop('checked', settings.retry_stuck_calls !== false);
+    $('#claude_auto_continue_no_text_timeout_seconds').val(clampNoTextTimeoutSeconds(settings.no_text_timeout_seconds));
+    $('#claude_auto_continue_max_stuck_retries').val(clampMaxStuckRetries(settings.max_stuck_retries));
     $('#claude_auto_continue_prompt').val(settings.continuation_prompt);
     updateFloatingToggle();
 }
@@ -107,10 +133,15 @@ function saveSettingsFromUi() {
     const continueTrigger = String($('#claude_auto_continue_trigger').val() || defaultSettings.continue_trigger);
     settings.continue_trigger = continueTriggers.has(continueTrigger) ? continueTrigger : defaultSettings.continue_trigger;
     settings.max_calls = clampMaxCalls($('#claude_auto_continue_max_calls').val());
+    settings.retry_stuck_calls = !!$('#claude_auto_continue_retry_stuck_calls').prop('checked');
+    settings.no_text_timeout_seconds = clampNoTextTimeoutSeconds($('#claude_auto_continue_no_text_timeout_seconds').val());
+    settings.max_stuck_retries = clampMaxStuckRetries($('#claude_auto_continue_max_stuck_retries').val());
     settings.continuation_prompt = String($('#claude_auto_continue_prompt').val() || '').trim() || defaultSettings.continuation_prompt;
 
     $('#claude_auto_continue_trigger').val(settings.continue_trigger);
     $('#claude_auto_continue_max_calls').val(settings.max_calls);
+    $('#claude_auto_continue_no_text_timeout_seconds').val(settings.no_text_timeout_seconds);
+    $('#claude_auto_continue_max_stuck_retries').val(settings.max_stuck_retries);
     updateFloatingToggle();
     saveSettingsDebounced();
 }
@@ -213,8 +244,8 @@ function createFloatingToggle() {
     toggle = document.createElement('button');
     toggle.id = FLOATING_TOGGLE_ID;
     toggle.type = 'button';
-    toggle.setAttribute('aria-label', 'Toggle Claude Auto Continue');
-    toggle.title = 'Claude Auto Continue';
+    toggle.setAttribute('aria-label', '切换 Claude 自动续写');
+    toggle.title = 'Claude 自动续写';
 
     let dragState = null;
     let lastTouchTime = 0;
@@ -316,7 +347,7 @@ function updateFloatingToggle() {
     toggle.style.display = '';
     toggle.classList.toggle('enabled', !!settings.enabled);
     toggle.setAttribute('aria-pressed', settings.enabled ? 'true' : 'false');
-    toggle.title = settings.enabled ? 'Claude Auto Continue: ON' : 'Claude Auto Continue: OFF';
+    toggle.title = settings.enabled ? 'Claude 自动续写：开启' : 'Claude 自动续写：关闭';
     applyFloatingTogglePosition(toggle, settings.floating_toggle_position);
 }
 
@@ -332,15 +363,21 @@ function onChatCompletionSettingsReady(generateData) {
         end_marker: settings.end_marker,
         continue_trigger: continueTriggers.has(settings.continue_trigger) ? settings.continue_trigger : defaultSettings.continue_trigger,
         max_calls: clampMaxCalls(settings.max_calls),
+        retry_stuck_calls: settings.retry_stuck_calls !== false,
+        no_text_timeout_seconds: clampNoTextTimeoutSeconds(settings.no_text_timeout_seconds),
+        max_stuck_retries: clampMaxStuckRetries(settings.max_stuck_retries),
         continuation_prompt: settings.continuation_prompt,
     };
 
-    console.info('Claude Auto Continue: attached request settings', {
+    console.info('Claude 自动续写：已附加请求设置', {
         source: generateData.chat_completion_source,
         model: generateData.model,
         end_marker: generateData.claude_auto_continue.end_marker,
         continue_trigger: generateData.claude_auto_continue.continue_trigger,
         max_calls: generateData.claude_auto_continue.max_calls,
+        retry_stuck_calls: generateData.claude_auto_continue.retry_stuck_calls,
+        no_text_timeout_seconds: generateData.claude_auto_continue.no_text_timeout_seconds,
+        max_stuck_retries: generateData.claude_auto_continue.max_stuck_retries,
     });
 }
 
@@ -357,7 +394,7 @@ function onClaudeAutoContinueStatus(status) {
         call > 0 && maxCalls > 0
             ? `\u540e\u53f0\u6b63\u5728\u7ee7\u7eed\u8c03\u7528 Claude (${call}/${maxCalls})`
             : '\u540e\u53f0\u6b63\u5728\u7ee7\u7eed\u8c03\u7528 Claude',
-        'Claude Auto Continue',
+        'Claude 自动续写',
         { timeOut: 2500 },
     );
 }
@@ -369,6 +406,9 @@ function bindSettingsListeners() {
     $('#claude_auto_continue_end_marker').on('input', saveSettingsFromUi);
     $('#claude_auto_continue_trigger').on('change', saveSettingsFromUi);
     $('#claude_auto_continue_max_calls').on('input', saveSettingsFromUi);
+    $('#claude_auto_continue_retry_stuck_calls').on('input', saveSettingsFromUi);
+    $('#claude_auto_continue_no_text_timeout_seconds').on('input', saveSettingsFromUi);
+    $('#claude_auto_continue_max_stuck_retries').on('input', saveSettingsFromUi);
     $('#claude_auto_continue_prompt').on('input', saveSettingsFromUi);
     window.addEventListener('resize', updateFloatingToggle);
 }
@@ -377,7 +417,7 @@ async function renderSettingsTemplate() {
     const response = await fetch(new URL('./settings.html', import.meta.url), { cache: 'no-cache' });
 
     if (!response.ok) {
-        throw new Error(`Claude Auto Continue: failed to load settings template (${response.status})`);
+        throw new Error(`Claude 自动续写：设置模板加载失败 (${response.status})`);
     }
 
     return await response.text();
